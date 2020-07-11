@@ -56,7 +56,8 @@ typedef struct _ar_thread_port_data {
 
 enum
 {
-    kSchedulerQuanta_ms = 10
+    kTimeQuanta_ms = 1,
+    kSchedulerTicks = 10
 };
 
 //! @}
@@ -136,7 +137,7 @@ static inline uint32_t ar_get_milliseconds_per_tick(void);
 //! @brief Returns the number of milliseconds per tick.
 inline uint32_t ar_get_milliseconds_per_tick()
 {
-    return kSchedulerQuanta_ms;
+    return kTimeQuanta_ms;
 }
 
 #endif // _AR_PORT_H_

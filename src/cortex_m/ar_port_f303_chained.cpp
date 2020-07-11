@@ -122,7 +122,7 @@ void ar_port_init_tick_timer()
     uTIM->CR1 = 0;
     uTIM->CR2 = (2 << TIM_CR2_MMS_Pos); //UPDATE EVENT as TRGO
     uTIM->PSC = (F_uTIM / 1000000UL)-1;//psc to have 1Mhz (1us) ticking
-    uTIM->ARR = (1000 * kSchedulerQuanta_ms) - 1;//kSchedulerQuanta_ms must be below 65ms!!!!
+    uTIM->ARR = (1000 * kTimeQuanta_ms) - 1;//kSchedulerQuanta_ms must be below 65ms!!!!
     uTIM->EGR = TIM_EGR_UG;//apply config
 	uTIM->SR = ~TIM_SR_UIF;
     
@@ -156,7 +156,7 @@ void ar_port_set_time_delay(bool enable, uint32_t delay_us)
 {
     if (enable)
     {
-        uint32_t delay_ticks = delay_us/1000 / kSchedulerQuanta_ms;
+        uint32_t delay_ticks = delay_us/1000 / kTimeQuanta_ms;
         // If the delay is 0, just make the SysTick interrupt pending.
         if (delay_ticks == 0)
         {
@@ -187,7 +187,7 @@ uint64_t ar_port_get_time_absolute_us()
     if (us_preread > us) { //overflow occurred during reading
         ticks = sTIM->CNT;
     }
-    return static_cast<uint64_t>(ticks * (kSchedulerQuanta_ms * 1000)) + us;
+    return static_cast<uint64_t>(ticks * (kTimeQuanta_ms * 1000)) + us;
 }
 
 //TODO: is return type sufficient?
@@ -199,7 +199,7 @@ uint32_t ar_port_get_time_absolute_ms()
     if (us_preread > us) { //overflow occurred during reading
         ticks = sTIM->CNT;
     }
-    return static_cast<uint32_t>(ticks * kSchedulerQuanta_ms) + us/1000;
+    return static_cast<uint32_t>(ticks * kTimeQuanta_ms) + us/1000;
 }
 
 //! A total of 64 bytes of stack space is required to hold the initial

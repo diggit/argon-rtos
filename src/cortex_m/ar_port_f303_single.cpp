@@ -151,7 +151,7 @@ void ar_port_set_time_delay(bool enable, uint32_t delay_us)
         if (delay_us == 100000U) {
             asm("NOP");
         }
-        uint32_t delay_ticks = delay_us/1000 / kSchedulerQuanta_ms;
+        uint32_t delay_ticks = delay_us/1000 / kTimeQuanta_ms;
         // If the delay is 0, just make the SysTick interrupt pending.
         if (delay_ticks == 0)
         {
@@ -164,15 +164,15 @@ void ar_port_set_time_delay(bool enable, uint32_t delay_us)
         }
 
         //never alter CNT
-        uint32_t ovfTicks = (sTIM->SR & TIM_SR_UIF ? (sTIM->ARR + 1) / (kSchedulerQuanta_ms * 1000) : 0);
-        const uint32_t alignmentsSinceTimerStart = sTIM->CNT / (kSchedulerQuanta_ms * 1000);
+        uint32_t ovfTicks = (sTIM->SR & TIM_SR_UIF ? (sTIM->ARR + 1) / (kTimeQuanta_ms * 1000) : 0);
+        const uint32_t alignmentsSinceTimerStart = sTIM->CNT / (kTimeQuanta_ms * 1000);
 
         targetedNextWakeup_tick = lastTick + ovfTicks + alignmentsSinceTimerStart + delay_ticks;
         if (sTIM_MAX_QUANTAS - alignmentsSinceTimerStart < delay_ticks) {
             delay_ticks = sTIM_MAX_QUANTAS - alignmentsSinceTimerStart;
         }
         nextWakeup_tick = lastTick + ovfTicks + alignmentsSinceTimerStart + delay_ticks;
-        sTIM->ARR = (alignmentsSinceTimerStart + delay_ticks) * (kSchedulerQuanta_ms * 1000) - 1;
+        sTIM->ARR = (alignmentsSinceTimerStart + delay_ticks) * (kTimeQuanta_ms * 1000) - 1;
     }
     else
     {
@@ -188,7 +188,7 @@ void ar_port_set_time_delay(bool enable, uint32_t delay_us)
 
 uint32_t ar_port_get_time_absolute_ticks()
 {
-    return ar_port_get_time_absolute_ms()/kSchedulerQuanta_ms;
+    return ar_port_get_time_absolute_ms()/kTimeQuanta_ms;
 }
 
 uint64_t ar_port_get_time_absolute_us()
@@ -215,7 +215,7 @@ uint64_t ar_port_get_time_absolute_us()
     }while(preread_cnt > cnt || preread_ticks != ticks || preread_ovf != ovf || nextTick!= preread_nextTick);
     //TODO: is this contraption enough to have synced 3 variables?
 
-    return static_cast<uint64_t>(ovf ? nextTick : ticks) * (kSchedulerQuanta_ms * 1000) + cnt;
+    return static_cast<uint64_t>(ovf ? nextTick : ticks) * (kTimeQuanta_ms * 1000) + cnt;
 }
 
 //TODO: is return type sufficient?
@@ -242,7 +242,7 @@ uint32_t ar_port_get_time_absolute_ms()
 
     }while(preread_cnt > cnt || preread_ticks != ticks || preread_ovf != ovf || nextTick!= preread_nextTick);
     //TODO: is this contraption enough to have synced 3 variables?
-    volatile uint32_t output = static_cast<uint32_t>(ovf ? nextTick : ticks)  * (kSchedulerQuanta_ms) + cnt /1000;
+    volatile uint32_t output = static_cast<uint32_t>(ovf ? nextTick : ticks)  * (kTimeQuanta_ms) + cnt /1000;
     return output;
 }
 
@@ -398,7 +398,7 @@ extern "C" void sTIM_IRQHandler(void)
     {
         sTIM->SR &= ~TIM_SR_UIF;
         // update lastTick only on interrupd due to overflow (non SW trigger)
-        lastTick = nextWakeup_tick + sTIM->CNT/(kSchedulerQuanta_ms * 1000);
+        lastTick = nextWakeup_tick + sTIM->CNT/(kTimeQuanta_ms * 1000);
     }
 
     if (propagateTicksToArgon)
@@ -413,7 +413,7 @@ extern "C" void sTIM_IRQHandler(void)
             if (targetedNextWakeup_tick > nextWakeup_tick) //but it is not target wakeup time (limited by timer may delay capability)
             {
                 // reconfigure delay again
-                ar_port_set_time_delay(true, (targetedNextWakeup_tick - nextWakeup_tick) * kSchedulerQuanta_ms * 1000);
+                ar_port_set_time_delay(true, (targetedNextWakeup_tick - nextWakeup_tick) * kTimeQuanta_ms * 1000);
             }
         }
     }

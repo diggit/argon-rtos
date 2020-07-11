@@ -496,7 +496,7 @@ void ar_kernel_scheduler()
         uint32_t delay = 0;
         if (g_ar.nextWakeup && g_ar.nextWakeup > ar_get_tick_count())
         {
-            delay = (g_ar.nextWakeup - ar_get_tick_count()) * kSchedulerQuanta_ms * 1000;
+            delay = (g_ar.nextWakeup - ar_get_tick_count()) * kTimeQuanta_ms * 1000;
         }
         bool enable = (g_ar.nextWakeup != 0);
         ar_port_set_time_delay(enable, delay);
@@ -542,7 +542,7 @@ uint32_t ar_kernel_get_next_wakeup_time()
     if (g_ar.flags.needsRoundRobin)
     {
         // No need to check sleeping threads!
-        return ar_get_tick_count() + 1;
+        return ar_get_tick_count() + kSchedulerTicks;
     }
 
     // Check for a sleeping thread. The sleeping list is sorted by wakeup time, so we only

@@ -59,8 +59,8 @@ constexpr uint32_t kInitialLR = 0u; //!< Set to 0 to stop stack crawl by debugge
 constexpr uint8_t kHandlerPriority = 0xff;
 
 //! useful constants
-constexpr uint32_t kSchedulerQuanta_ticks = SystemCoreClock/1000*kSchedulerQuanta_ms;
-constexpr uint32_t kSchedulerQuanta_us = kSchedulerQuanta_ms * 1000;
+constexpr uint32_t kSchedulerQuanta_ticks = SystemCoreClock/1000*kTimeQuanta_ms;
+constexpr uint32_t kSchedulerQuanta_us = kTimeQuanta_ms * 1000;
 
 
 //------------------------------------------------------------------------------
@@ -150,7 +150,7 @@ void ar_port_set_time_delay(bool enable, uint32_t delay_us)
 
     if (enable)
     {
-        uint32_t delay_ticks = delay_us/1000/kSchedulerQuanta_ms;
+        uint32_t delay_ticks = delay_us/1000/kTimeQuanta_ms;
         // If the delay is 0, just make the SysTick interrupt pending.
         if (delay_ticks == 0)
         {
@@ -204,7 +204,7 @@ uint64_t ar_port_get_time_absolute_us()
     {
         counter += max;
     }
-    return  static_cast<uint64_t>(ticks) * kSchedulerQuanta_ms * 1000 + counter / (SystemCoreClock / 1000000);
+    return  static_cast<uint64_t>(ticks) * kTimeQuanta_ms * 1000 + counter / (SystemCoreClock / 1000000);
 }
 
 //TODO: is return type sufficient?
@@ -238,7 +238,7 @@ uint32_t ar_port_get_time_absolute_ms()
     {
         counter += max;
     }
-    return  ticks * kSchedulerQuanta_ms  + counter / (SystemCoreClock / 1000);
+    return  ticks * kTimeQuanta_ms  + counter / (SystemCoreClock / 1000);
 }
 
 
