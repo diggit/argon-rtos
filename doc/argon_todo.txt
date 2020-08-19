@@ -108,7 +108,7 @@ x Track time spent in scheduler.
 √ Allow timers to be stopped from timer callback.
 - Consider replacing special member function callback support with member function thunk class.
 * Only defer irq operations if the kernel is locked, otherwise execute immediately.
-√ Change ar_runloop_run() to return ar_status_t instead of its own type.
+√ Change ar_runloop_run() to return Ar::Status instead of its own type.
 - Remove queue and channel handler function support from runloops?
 - Only run the scheduler when we know we need to switch threads. (maybe already the case)
 - Only handle round-robin in the tick timer (except for tickless).
@@ -209,7 +209,7 @@ Run loops
 
 void my_thread(void * arg)
 {
-    Ar::RunLoop loop;
+    Ar::Runloop loop;
     Ar::Timer tmrA("a", do_tmr_a, kArPeriodicTimer, 50);
     Ar::Timer tmrB("b", d_tmr_b, kArPeriodicTimer, 120);
     loop.addTimer(tmrA);
@@ -221,9 +221,9 @@ void my_thread(void * arg)
         uintptr_t value;
         switch (loop.run(&value))
         {
-            case kArRunLoopQueueSource:
+            case kArRunloopQueueSource:
                 break;
-            case kArRunLoopStopped:
+            case kArRunloopStopped:
                 break;
         }
     }
@@ -262,19 +262,19 @@ void my_thread2(void * arg)
         uintptr_t value;
         switch (ar_runloop_run(&rl, 0, &obj, &value))
         {
-            case kArRunLoopQueueSource:
+            case kArRunloopQueueSource:
                 if (obj == &myq)
                 {
                     printf("received %d on queue myq\n", value);
                 }
                 break;
-            case kArRunLoopChannelReceived:
+            case kArRunloopChannelReceived:
                 if (obj == &chan)
                 {
                     printf("received %d on channel chan\n", value);
                 }
                 break;
-            case kArRunLoopStopped:
+            case kArRunloopStopped:
                 break;
         }
     }

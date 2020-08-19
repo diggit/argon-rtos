@@ -31,316 +31,223 @@
  * @brief Source for Ar microkernel runloops.
  */
 
-#include "ar_internal.h"
-#include <string.h>
-#include <assert.h>
+#include "argon/ar_runloop.hpp"
+#include "argon/ar_thread.hpp"
+#include "argon/ar_timer.hpp"
+#include "argon/ar_queue.hpp"
+#include "argon/ar_kernel.hpp"
+#include "ar_assert.hpp"
+#include <cstring>
+#include <optional>
 
-using namespace Ar;
+namespace Ar {
 
-//------------------------------------------------------------------------------
-// Code
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Code
+	//------------------------------------------------------------------------------
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_runloop_create(ar_runloop_t * runloop, const char * name)
-{
-    if (!runloop)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
+	// See ar_kernel.h for documentation of this function.
+	Runloop::Runloop(const char *name) : m_timers(Timer::sort_by_wakeup) {
 
-    memset(runloop, 0, sizeof(ar_runloop_t));
+		Ar::assert(Ar::Port::get_irq_state());
 
-    runloop->m_name = name ? name : AR_ANONYMOUS_OBJECT_NAME;
-    runloop->m_timers.m_predicate = ar_timer_sort_by_wakeup;
+		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
 
 #if AR_GLOBAL_OBJECT_LISTS
-    runloop->m_createdNode.m_obj = runloop;
-    g_ar_objects.runloops.add(&runloop->m_createdNode);
+		runloop->m_createdNode.m_obj = runloop;
+		g_ar_objects.runloops.add(&runloop->m_createdNode);
 #endif
+	}
 
-    return kArSuccess;
-}
-
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_runloop_delete(ar_runloop_t * runloop)
-{
-    if (!runloop)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
-    if (runloop->m_isRunning)
-    {
-        return kArInvalidStateError;
-    }
+	// See ar_kernel.h for documentation of this function.
+	Runloop::~Runloop() {
+		Ar::assert(Ar::Port::get_irq_state());
+		Ar::assert(m_isRunning);
 
 #if AR_GLOBAL_OBJECT_LISTS
-    g_ar_objects.runloops.remove(&runloop->m_createdNode);
+		g_ar_objects.runloops.remove(&runloop->m_createdNode);
 #endif
+	}
 
-    return kArSuccess;
-}
+	Ar::Status Runloop::run(RunloopResult *object, std::optional<Ar::Duration> timeout) {
+		// It's ok to nest runs of the runloop, but only on a single thread.
+		auto thread = Thread::getCurrent();
+		if (m_isRunning && m_thread != thread) { return Status::runLoopAlreadyRunningError; }
+		// Another check to make sure no other runloop is already running on the current thread.
+		if (thread->m_runLoop && thread->m_runLoop != this) { return Status::runLoopAlreadyRunningError; }
+		// Disallow running from interrupt context.
+		if (Ar::Port::get_irq_state()) { return Ar::Status::notFromInterruptError; }
 
-ar_status_t ar_runloop_run(ar_runloop_t * runloop, uint32_t timeout, ar_runloop_result_t * object)
-{
-    if (!runloop)
-    {
-        return kArInvalidParameterError;
-    }
-    // It's ok to nest runs of the runloop, but only on a single thread.
-    if (runloop->m_isRunning && runloop->m_thread != g_ar.currentThread)
-    {
-        return kArRunLoopAlreadyRunningError;
-    }
-    // Another check to make sure no other runloop is already running on the current thread.
-    if (g_ar.currentThread->m_runLoop && g_ar.currentThread->m_runLoop != runloop)
-    {
-        return kArRunLoopAlreadyRunningError;
-    }
-    // Disallow running from interrupt context.
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
+		// Clear returned object.
+		if (object) { object->m_queue = nullptr; }
 
-    // Clear returned object.
-    if (object)
-    {
-        object->m_queue = NULL;
-    }
+		bool isNested = m_isRunning;
+		if (!isNested) {
+			// Associate this runloop with the current thread.
+			thread->m_runLoop = this;
+			m_thread = thread;
 
-    bool isNested = runloop->m_isRunning;
-    if (!isNested)
-    {
-        // Associate this runloop with the current thread.
-        g_ar.currentThread->m_runLoop = runloop;
-        runloop->m_thread = g_ar.currentThread;
+			// Clear stop flag.
+			m_stop = false;
 
-        // Clear stop flag.
-        runloop->m_stop = false;
+			// Set running flag.
+			m_isRunning = true;
+		}
 
-        // Set running flag.
-        runloop->m_isRunning = true;
-    }
+		// Prepare timeout.
+		auto startTime = Ar::Time::now();
 
-    // Prepare timeout.
-    uint32_t startTime = ar_get_tick_count();
-    uint32_t timeoutTicks = timeout;
-    if (timeout != kArInfiniteTimeout)
-    {
-        timeoutTicks = ar_milliseconds_to_ticks(timeout);
-    }
+		Ar::Status returnStatus = Status::runLoopStopped;
 
-    ar_status_t returnStatus = kArRunLoopStopped;
+		// Run it.
+		do {
+			// Invoke timers.
+			Timer::run_timers(m_timers);
 
-    // Run it.
-    do {
-        // Invoke timers.
-        ar_kernel_run_timers(runloop->m_timers);
+			// Invoke one queued function.
+			if (m_functionCount) {
+				auto i = m_functionHead.load();
 
-        // Invoke one queued function.
-        if (runloop->m_functionCount)
-        {
-            uint16_t i = runloop->m_functionHead;
-            uint16_t iPlusOne = (i + 1) % AR_RUNLOOP_FUNCTION_QUEUE_SIZE;
+				RunloopFunctionInfo fn = m_functions[i];
 
-            ar_runloop_t::_ar_runloop_function_info fn = runloop->m_functions[i];
+				m_functionCount--;
+				// This is the only line that modifies m_functionHead.
+				m_functionHead = (i + 1) % Ar::config::RUNLOOP_FUNCTION_QUEUE_SIZE;
 
-            ar_atomic_add32(&runloop->m_functionCount, -1);
-            // This is the only line that modifies m_functionHead.
-            runloop->m_functionHead = iPlusOne;
+				Ar::assert(fn.function);
+				fn.function(fn.param);
+			}
 
-            assert(fn.function);
-            fn.function(fn.param);
-        }
+			// Check pending queues.
+			if (!m_queues.isEmpty()) {
+				auto *queue = m_queues.getHead<Queue>();
+				Ar::assert(queue);
+				if (queue->m_count < 2) { m_queues.remove(&queue->m_runLoopNode); }
 
-        // Check pending queues.
-        if (!runloop->m_queues.isEmpty())
-        {
-            ar_queue_t * queue = runloop->m_queues.getHead<ar_queue_t>();
-            assert(queue);
-            if (queue->m_count < 2)
-            {
-                runloop->m_queues.remove(queue);
-            }
+				if (queue->m_count > 0) {
+					if (queue->m_runLoopHandler) {
+						// Call out to run loop queue source handler.
+						queue->m_runLoopHandler(queue, queue->m_runLoopHandlerParam);
+					} else {
+						// No handler associated with this queue, so exit the run loop.
+						if (object) { object->m_queue = queue; }
 
-            if (queue->m_count > 0)
-            {
-                if (queue->m_runLoopHandler)
-                {
-                    // Call out to run loop queue source handler.
-                    queue->m_runLoopHandler(queue, queue->m_runLoopHandlerParam);
-                }
-                else
-                {
-                    // No handler associated with this queue, so exit the run loop.
-                    if (object)
-                    {
-                        object->m_queue = queue;
-                    }
+						returnStatus = Status::runLoopQueueReceived;
+						break;
+					}
+				}
+			}
 
-                    returnStatus = kArRunLoopQueueReceived;
-                    break;
-                }
-            }
-        }
+			// Check timeout. Adjust the timeout based on how long we've run so far.
+			if (timeout.has_value()) {
+				if(startTime.elapsed(timeout.value())) {
+					// Timed out, exit runloop.
+					returnStatus = Status::timeoutError;
+					break;
+				}
+			}
 
-        // Check timeout. Adjust the timeout based on how long we've run so far.
-        uint32_t blockTimeoutTicks = timeoutTicks;
-        if (blockTimeoutTicks != kArInfiniteTimeout)
-        {
-            uint32_t deltaTicks = ar_get_tick_count() - startTime;
-            if (deltaTicks >= timeoutTicks)
-            {
-                // Timed out, exit runloop.
-                returnStatus = kArTimeoutError;
-                break;
-            }
-            blockTimeoutTicks -= deltaTicks;
-        }
+			std::optional<Time> soonestWakeup;
+			if (timeout) {
+				soonestWakeup = startTime + timeout.value();
+			}
 
-        // Make sure we don't sleep past the next scheduled timer.
-        if (!runloop->m_timers.isEmpty())
-        {
-            ar_timer_t * timer = runloop->m_timers.getHead<ar_timer_t>();
+			// Make sure we don't sleep past the next scheduled timer.
+			if (!m_timers.isEmpty()) {
+				auto timer = m_timers.getHead<Timer>();
 
-            // Timers should always have a wakeup time in the future.
-            assert (timer->m_wakeupTime >= ar_get_tick_count());
+				// Timers should always have a wakeup time in the future.
+				Ar::assert(timer->m_wakeupTime >= Ar::Time::now());
 
-            uint32_t wakeupDeltaTicks = timer->m_wakeupTime - ar_get_tick_count();
-            // kArInfiniteTimeout is the max 32-bit value, so wakeupDeltaTicks will always be <=
-            if (wakeupDeltaTicks < blockTimeoutTicks)
-            {
-                blockTimeoutTicks = wakeupDeltaTicks;
-            }
-        }
+				if (!soonestWakeup || timer->m_wakeupTime < soonestWakeup.value()) {
+					soonestWakeup = timer->m_wakeupTime;
+				}
+			}
 
-        // Don't sleep if there are queued functions or sources.
-        if (!runloop->m_functionCount && runloop->m_queues.isEmpty())
-        {
-            // Sleep the runloop's thread for the adjusted timeout.
-            uint32_t blockTimeout = (blockTimeoutTicks == kArInfiniteTimeout)
-                                        ? kArInfiniteTimeout
-                                        : ar_ticks_to_milliseconds(blockTimeoutTicks);
-            if (blockTimeout)
-            {
-                ar_thread_sleep(blockTimeout);
-            }
-        }
-    } while (!runloop->m_stop);
+			// Don't sleep if there are queued functions or sources.
+			if (!m_functionCount && m_queues.isEmpty()) {
+				// Sleep the runloop's thread until nest event is scheduled (timer wakeup or timeout)
+				if (soonestWakeup) { Thread::sleepUntil(soonestWakeup.value()); }
+			}
+		} while (!m_stop);
 
-    if (!isNested)
-    {
-        // Clear associated thread.
-        g_ar.currentThread->m_runLoop = NULL;
-        runloop->m_thread = NULL;
+		if (!isNested) {
+			// Clear associated thread.
+			Thread::getCurrent()->m_runLoop = nullptr;
+			m_thread = nullptr;
 
-        // Clear running flag.
-        runloop->m_isRunning = false;
-    }
+			// Clear running flag.
+			m_isRunning = false;
+		}
 
-    // TODO return different status for timed out versus stopped?
-    return returnStatus;
-}
+		// TODO return different status for timed out versus stopped?
+		return returnStatus;
+	}
 
-void ar_runloop_wake(ar_runloop_t * runloop)
-{
-    ar_thread_t * thread = runloop->m_thread;
-    if (runloop->m_isRunning && thread)
-    {
-        ar_thread_resume(thread);
-    }
-}
+	Ar::Status Runloop::stop() {
 
-ar_status_t ar_runloop_stop(ar_runloop_t * runloop)
-{
-    if (!runloop)
-    {
-        return kArInvalidParameterError;
-    }
+		// Set the stop flag.
+		m_stop = true;
 
-    // Set the stop flag.
-    runloop->m_stop = true;
+		// Wake the runloop in case it is blocked.
+		wake();
 
-    // Wake the runloop in case it is blocked.
-    ar_runloop_wake(runloop);
+		return Ar::Status::success;
+	}
 
-    return kArSuccess;
-}
+	void Runloop::wake() {
+		if (m_isRunning && m_thread) { m_thread->resume(); }
+	}
 
-ar_status_t ar_runloop_perform(ar_runloop_t * runloop, ar_runloop_function_t function, void * param)
-{
-    if (!runloop || !function)
-    {
-        return kArInvalidParameterError;
-    }
+	Ar::Status Runloop::perform(RunloopFunction function, void *param) {
+		if (!function) { return Ar::Status::invalidParameterError; }
 
-    // TODO block if queue is full?
-    int32_t tail = ar_kernel_atomic_queue_insert(1, runloop->m_functionCount, runloop->m_functionTail, AR_RUNLOOP_FUNCTION_QUEUE_SIZE);
-    if (tail == -1)
-    {
-        return kArQueueFullError;
-    }
-    ar_runloop_t::_ar_runloop_function_info & fn = runloop->m_functions[tail];
-    fn.function = function;
-    fn.param = param;
+		// TODO block if queue is full?
+		auto count = m_functionCount.load();
+		do {
+			count = m_functionCount;
+			if (count + 1 > config::RUNLOOP_FUNCTION_QUEUE_SIZE) { return Status::queueFullError; }
+		}while(m_functionCount.compare_exchange_weak(count, count + 1));
 
-    // Wake the runloop in case it is blocked.
-    ar_runloop_wake(runloop);
+		auto last = m_functionTail.load();
+		do {
+			last = m_functionTail;
+		}while(m_functionTail.compare_exchange_weak(last, (last + 1) % config::DEFERRED_ACTION_QUEUE_SIZE));
 
-    return kArSuccess;
-}
+		auto tail = last;
 
-ar_status_t ar_runloop_add_timer(ar_runloop_t * runloop, ar_timer_t * timer)
-{
-    if (!runloop || !timer)
-    {
-        return kArInvalidParameterError;
-    }
+		RunloopFunctionInfo &fn = m_functions[tail];
+		fn.function = function;
+		fn.param = param;
 
-    timer->m_runLoop = runloop;
+		// Wake the runloop in case it is blocked.
+		wake();
 
-    return kArSuccess;
-}
+		return Ar::Status::success;
+	}
 
-ar_status_t ar_runloop_add_queue(ar_runloop_t * runloop, ar_queue_t * queue, ar_runloop_queue_handler_t callback, void * param)
-{
-    if (!runloop || !queue)
-    {
-        return kArInvalidParameterError;
-    }
+	Ar::Status Runloop::addTimer(Timer &timer) {
+		timer.m_runLoop = this;
 
-    // A queue can only be added to one runloop at a time.
-    if (queue->m_runLoop != NULL && queue->m_runLoop != runloop)
-    {
-        return kArAlreadyAttachedError;
-    }
+		return Ar::Status::success;
+	}
 
-    // Set runloop on the queue.
-    queue->m_runLoopHandler = callback;
-    queue->m_runLoopHandlerParam = param;
-    queue->m_runLoop = runloop;
+	Ar::Status Runloop::addQueue(Queue &queue, RunloopQueueHandler callback, void *param) {
 
-    return kArSuccess;
-}
+		// A queue can only be added to one runloop at a time.
+		if (queue.m_runLoop != NULL && queue.m_runLoop != this) { return Status::alreadyAttachedError; }
 
-ar_runloop_t * ar_runloop_get_current(void)
-{
-    return g_ar.currentThread->m_runLoop;
-}
+		// Set runloop on the queue.
+		queue.m_runLoopHandler = callback;
+		queue.m_runLoopHandlerParam = param;
+		queue.m_runLoop = this;
 
-const char * ar_runloop_get_name(ar_runloop_t * runloop)
-{
-    return runloop ? runloop->m_name : NULL;
-}
+		return Ar::Status::success;
+	}
+
+	Runloop *Runloop::getCurrent(void) { return Thread::getCurrent()->m_runLoop; }
+
+} // namespace Ar
 
 //------------------------------------------------------------------------------
 // EOF

@@ -27,7 +27,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "argon/ar_classes.h"
+#include "argon/ar_classes.hpp"
 #include "ar_config.h"
 
 #if defined(__CC_ARM)

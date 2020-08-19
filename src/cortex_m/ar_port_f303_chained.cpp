@@ -27,409 +27,306 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "../ar_internal.h"
-#include "ar_port.h"
-#include <assert.h>
-#include <string.h>
+#include "ar_port.hpp"
+#include "argon/ar_kernel.hpp"
+#include <cstring>
 #include <iterator>
+#include <exception>
 
 #include "clock.h"
-#include "ar_config.h"
+#include "device.h"
+#include "ar_config.hpp"
 
-using namespace Ar;
+namespace Ar {
 
-//------------------------------------------------------------------------------
-// Definitions
-//------------------------------------------------------------------------------
+	// prototype for fcn in assembly
+	extern "C" std::uint32_t ar_port_yield_isr(std::uint32_t topOfStack, std::uint32_t isExtendedFrame);
 
-//! Initial thread register values.
-enum
-{
-    kInitialxPSR = 0x01000000u, //!< Set T bit.
-    kInitialLR = 0u //!< Set to 0 to stop stack crawl by debugger.
-};
+// uTIM counts microseconds between system ticks, overflow increments sTIM
+#define uTIM			TIM3
+#define uTIM_IRQHandler TIM3_IRQHandler
+	static constexpr auto F_uTIM = F_TIM3;
+	static constexpr auto uTIM_IRQn = TIM3_IRQn;
+	static constexpr auto uTIM_MAX = UINT16_MAX;
+	static constexpr auto uTIM_CLKFZ_MSK = DBGMCU_APB1_FZ_DBG_TIM3_STOP;
+	static inline void uTIM_CLK_EN() {
+		RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+		(void)RCC->APB1ENR;
+	}
+	static constexpr auto uTIM_PERIOD = 1_ms;
 
-//! @brief Priorities for kernel exceptions.
-enum _exception_priorities
-{
-    //! All handlers use the same, lowest priority.
-    kHandlerPriority = 0xff
-};
-
-//uTIM counts microseconds between system ticks, overflow increments sTIM
-#define F_uTIM F_TIM3
-#define uTIM TIM3
-#define uTIM_IRQn TIM3_IRQn
-#define uTIM_MAX UINT16_MAX
-#define uTIM_CLK_EN() do{RCC->APB1ENR |= RCC_APB1ENR_TIM3EN; (void)RCC->APB1ENR;}while(0)
-
-//sTIM counts system ticks
-#define F_sTIM F_TIM2
-#define sTIM TIM2
-#define sTIM_IRQn TIM2_IRQn
+// sTIM counts system ticks
+#define sTIM			TIM2
 #define sTIM_IRQHandler TIM2_IRQHandler
-#define sTIM_MAX UINT32_MAX
-#define sTIM_CLK_EN() do{RCC->APB1ENR |= RCC_APB1ENR_TIM2EN; (void)RCC->APB1ENR;}while(0)
+	static constexpr auto F_sTIM = F_TIM2;
+	static constexpr auto sTIM_IRQn = TIM2_IRQn;
+	static constexpr auto sTIM_MAX = UINT32_MAX;
+	static constexpr auto sTIM_CLKFZ_MSK = DBGMCU_APB1_FZ_DBG_TIM2_STOP;
+	static inline void sTIM_CLK_EN() {
+		RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+		(void)RCC->APB1ENR;
+	}
 
-//------------------------------------------------------------------------------
-// Prototypes
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Prototypes
+	//------------------------------------------------------------------------------
 
-extern "C" uint32_t ar_port_yield_isr(uint32_t topOfStack, uint32_t isExtendedFrame);
+	std::uint32_t Port::yield_isr(std::uint32_t topOfStack, std::uint32_t isExtendedFrame);
 
-//------------------------------------------------------------------------------
-// Variables
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Code
+	//------------------------------------------------------------------------------
 
-//! @brief Global used solely to pass info back to asm PendSV handler code.
-bool g_ar_hasExtendedFrame = false;
+	void Port::init_system() {
+		if constexpr (__FPU_USED) {
+			// Enable FPU on Cortex-M4F.
 
-//------------------------------------------------------------------------------
-// Code
-//------------------------------------------------------------------------------
+			// Enable full access to coprocessors 10 and 11 to enable FPU access.
+			SCB->CPACR |= (3 << 20) | (3 << 22);
 
-void ar_port_init_system()
-{
-    // Enable FPU on Cortex-M4F.
-#if __FPU_USED
-    // Enable full access to coprocessors 10 and 11 to enable FPU access.
-    SCB->CPACR |= (3 << 20) | (3 << 22);
+			// Disable lazy FP context save.
+			FPU->FPCCR |= FPU_FPCCR_ASPEN_Msk;
+			FPU->FPCCR &= ~FPU_FPCCR_LSPEN_Msk;
+		}
 
-    // Disable lazy FP context save.
-    FPU->FPCCR |= FPU_FPCCR_ASPEN_Msk;
-    FPU->FPCCR &= ~FPU_FPCCR_LSPEN_Msk;
-#endif // __FPU_USED
+		std::set_terminate(Port::halt);
 
-    // Init PSP.
-    __set_PSP((uint32_t)g_ar.idleThread.m_stackPointer);
+		// Init PSP.
+		__set_PSP(reinterpret_cast<std::uint32_t>(Kernel::idleThread()->m_stackPointer));
 
-    // Set priorities for the exceptions we use in the kernel.
-    NVIC_SetPriority(SVCall_IRQn, kHandlerPriority);
-    NVIC_SetPriority(PendSV_IRQn, kHandlerPriority);
-    //TODO: use uTIM overflow irq in tick mode
-    NVIC_EnableIRQ(sTIM_IRQn);
-    NVIC_SetPriority(sTIM_IRQn, kHandlerPriority);
-}
+		// Set priorities for the exceptions we use in the kernel.
+		NVIC_SetPriority(SVCall_IRQn, handlerPriority);
+		NVIC_SetPriority(PendSV_IRQn, handlerPriority);
 
+		NVIC_EnableIRQ(sTIM_IRQn);
+		NVIC_SetPriority(sTIM_IRQn, handlerPriority);
+		NVIC_EnableIRQ(uTIM_IRQn);
+		NVIC_SetPriority(uTIM_IRQn, handlerPriority);
+	}
 
+	void Port::init_timer() {
+		// se corresponding bits in DBGMCU->APBxFZ to stop timer in debug, useful for stepping
+		sTIM_CLK_EN();
+		uTIM_CLK_EN();
+		if constexpr (DEBUG) { DBGMCU->APB1FZ |= uTIM_CLKFZ_MSK | sTIM_CLKFZ_MSK; } // stop clocks to timer when core halted
+		// NVIC_ClearPendingIRQ
+		uTIM->CR1 = 0;
+		uTIM->CR2 = (2 << TIM_CR2_MMS_Pos); // UPDATE EVENT as TRGO
+		uTIM->PSC = (F_uTIM / 1000000UL) - 1; // psc to have 1Mhz (1us) ticking
+		uTIM->ARR = uTIM_PERIOD.in_us() - 1; // warning, 16bit tmr
+		uTIM->EGR = TIM_EGR_UG; // apply config
+		uTIM->SR = ~TIM_SR_UIF;
 
-void ar_port_init_tick_timer()
-{
-    //se corresponding bits in DBGMCU->APBxFZ to stop timer in debug, useful for stepping
-    sTIM_CLK_EN();
-    uTIM_CLK_EN();
-    // NVIC_ClearPendingIRQ
-    uTIM->CR1 = 0;
-    uTIM->CR2 = (2 << TIM_CR2_MMS_Pos); //UPDATE EVENT as TRGO
-    uTIM->PSC = (F_uTIM / 1000000UL)-1;//psc to have 1Mhz (1us) ticking
-    uTIM->ARR = (1000 * kTimeQuanta_ms) - 1;//kSchedulerQuanta_ms must be below 65ms!!!!
-    uTIM->EGR = TIM_EGR_UG;//apply config
-	uTIM->SR = ~TIM_SR_UIF;
-    
-    sTIM->CR1 = 0;
-    sTIM->CR2 = 0;
-    sTIM->SMCR = (TIM_SMCR_TS_1) | (TIM_SMCR_SMS_0 | TIM_SMCR_SMS_1 | TIM_SMCR_SMS_2);//count on TRGI, ITR2 (TIM3)
-    sTIM->PSC = 0;
-    sTIM->ARR = sTIM_MAX;
-    sTIM->EGR = TIM_EGR_UG;//apply config
-	sTIM->SR = ~TIM_SR_UIF;
+		sTIM->CR1 = 0;
+		sTIM->CR2 = 0;
+		sTIM->SMCR = (TIM_SMCR_TS_1) | (TIM_SMCR_SMS_0 | TIM_SMCR_SMS_1 | TIM_SMCR_SMS_2); // count on TRGI, ITR2 (TIM3)
+		sTIM->PSC = 0;
+		sTIM->ARR = sTIM_MAX;
+		sTIM->EGR = TIM_EGR_UG; // apply config
+		sTIM->SR = ~TIM_SR_UIF;
 
+		Port::set_wakeup_time(std::nullopt);
 
-#if AR_ENABLE_TICKLESS_IDLE
-    ar_port_set_time_delay(false, 0);
-#else // AR_ENABLE_TICKLESS_IDLE
-    ar_port_set_timer_delay(true, kSchedulerQuanta_ms * 1000);
-#endif // AR_ENABLE_TICKLESS_IDLE
+		bit::set(uTIM->CR1, TIM_CR1_CEN);
+		bit::set(sTIM->CR1, TIM_CR1_CEN);
+	}
 
-    uTIM->CR1 |= TIM_CR1_CEN;
-    sTIM->CR1 |= TIM_CR1_CEN;
-}
+	struct TimePair {
+		std::uint32_t s;
+		std::uint16_t u;
+		TimePair() = delete;
+		constexpr TimePair(std::uint32_t s_, std::uint16_t u_) : s(s_), u(u_) {}
+	};
 
-//! Schedules next interrupt from timer.
-//!
-//! @param enables/disables timer 
-//! @param configures delay of next interrupt from timer
-//! @return real value of delay, because clamping may occur
-//!     returns 0 when timer does not run or is delay:_us is 0
-//!     and interrupt is fired up immediately
-void ar_port_set_time_delay(bool enable, uint32_t delay_us)
-{
-    if (enable)
-    {
-        uint32_t delay_ticks = delay_us/1000 / kTimeQuanta_ms;
-        // If the delay is 0, just make the SysTick interrupt pending.
-        if (delay_ticks == 0)
-        {
-            NVIC_SetPendingIRQ(sTIM_IRQn);
-            return;
-        }
-        
-        sTIM->CCR1 = sTIM->CNT + delay_ticks;
-        sTIM->DIER |= TIM_DIER_CC1IE;
-    }
-    else
-    {
-        sTIM->DIER &= ~TIM_DIER_CC1IE; //just don't fire interrupts on compare
-    }
-}
+	std::optional<TimePair> targetWakeupTime {};
 
+	enum class WakeInterruptSource { STIM, UTIM, UNKNOWN };
 
-uint32_t ar_port_get_time_absolute_ticks()
-{
-    return sTIM->CNT;
-}
+	volatile std::uint32_t g_scnt = 0;
+	volatile std::uint32_t g_ucnt = 0;
+	volatile WakeInterruptSource g_source = WakeInterruptSource::UNKNOWN;
 
-uint64_t ar_port_get_time_absolute_us()
-{
-    uint16_t us_preread = uTIM->CNT;
-    uint32_t ticks = sTIM->CNT;
-    uint16_t us = uTIM->CNT;
-    if (us_preread > us) { //overflow occurred during reading
-        ticks = sTIM->CNT;
-    }
-    return static_cast<uint64_t>(ticks * (kTimeQuanta_ms * 1000)) + us;
-}
+	volatile std::uint8_t fastDispatch = 0;
 
-//TODO: is return type sufficient?
-uint32_t ar_port_get_time_absolute_ms()
-{
-    uint16_t us_preread = uTIM->CNT;
-    uint32_t ticks = sTIM->CNT;
-    uint16_t us = uTIM->CNT;
-    if (us_preread > us) { //overflow occurred during reading
-        ticks = sTIM->CNT;
-    }
-    return static_cast<uint32_t>(ticks * kTimeQuanta_ms) + us/1000;
-}
+	volatile std::uint8_t lastAction = 0;
 
-//! A total of 64 bytes of stack space is required to hold the initial
-//! thread context.
-//!
-//! The entire remainder of the stack is filled with the pattern 0xba
-//! as an easy way to tell what the high watermark of stack usage is.
-void ar_port_prepare_stack(ar_thread_t * thread, uint32_t stackSize, void * param)
-{
-#if __FPU_USED
-    // Clear the extended frame flag.
-    thread->m_portData.m_hasExtendedFrame = false;
-#endif // __FPU_USED
+	void disable_all_tim_interrupts() {
+		// disable cmp interrupt generation
+		bit::clear(sTIM->DIER, TIM_DIER_CC1IE);
+		bit::clear(uTIM->DIER, TIM_DIER_CC1IE);
+		// clear interrupt flags from timers
+		sTIM->SR = 0;
+		uTIM->SR = 0;
+		// clear possibly pending interrupts
+		NVIC_ClearPendingIRQ(sTIM_IRQn);
+		NVIC_ClearPendingIRQ(uTIM_IRQn);
 
-    // 8-byte align stack.
-    uint32_t sp = reinterpret_cast<uint32_t>(thread->m_stackBottom) + stackSize;
-    uint32_t delta = sp & 7;
-    sp -= delta;
-    stackSize = (stackSize - delta) & ~7;
-    thread->m_stackTop = reinterpret_cast<uint32_t *>(sp);
-    thread->m_stackBottom = reinterpret_cast<uint32_t *>(sp - stackSize);
+		sTIM->CCR1 = 0;
+		uTIM->CCR1 = 0;
+	}
 
-#if AR_THREAD_STACK_PATTERN_FILL
-    // Fill the stack with a pattern. We just take the low byte of the fill pattern since
-    // memset() is a byte fill. This assumes each byte of the fill pattern is the same.
-    memset(thread->m_stackBottom, kStackFillValue & 0xff, stackSize);
-#endif // AR_THREAD_STACK_PATTERN_FILL
+	void handlePossibleWakeupInterrupt(WakeInterruptSource source) {
+		g_source = source;
+		if (fastDispatch) {
+			lastAction = 11;
+			volatile auto temp = fastDispatch;
+			fastDispatch = 0;
+			disable_all_tim_interrupts();
+			targetWakeupTime.reset();
+			Kernel::timerIsr();
+			(void)temp;
+			return;
+		}
+		assert(targetWakeupTime.has_value()); // otherwise, there was no reason why irq fired
+		const auto now = Time::now();
+		const auto times = targetWakeupTime.value();
+		switch (source) {
+			case WakeInterruptSource::STIM:
+				lastAction = 12;
+				// (most probably) first stage of multistage wakeup
+				bit::clear(sTIM->DIER, TIM_DIER_CC1IE); // no more sTIm ticks
+				sTIM->CCR1 = 0;
 
-    // Save new top of stack. Also, make sure stack is 8-byte aligned.
-    sp -= sizeof(ThreadContext);
-    thread->m_stackPointer = reinterpret_cast<uint8_t *>(sp);
+				// configure uTIM for final stage of timing
+				uTIM->CCR1 = times.u;
+				uTIM->SR = 0; // clear all irq flags
+				bit::set(uTIM->DIER, TIM_DIER_CC1IE);
+				if (uTIM->CNT >= uTIM->CCR1) {
+					lastAction = 13;
+					// we may have missed cmp event for irq generation
+					disable_all_tim_interrupts();
+					targetWakeupTime.reset();
+					Kernel::timerIsr();
+					return;
+				}
+				break;
 
-    // Set the initial context on stack.
-    ThreadContext * context = reinterpret_cast<ThreadContext *>(sp);
-    context->xpsr = kInitialxPSR;
-    context->pc = reinterpret_cast<uint32_t>(ar_thread_wrapper);
-    context->lr = kInitialLR;
-    context->r0 = reinterpret_cast<uint32_t>(thread); // Pass pointer to Thread object as first argument.
-    context->r1 = reinterpret_cast<uint32_t>(param); // Pass arbitrary parameter as second argument.
+			case WakeInterruptSource::UTIM: {
+				// second stage of two stage wakeup or first stage of single stage wakeup
+				auto sCnt = sTIM->CNT;
+				auto uCnt = uTIM->CNT;
+				g_scnt = sCnt;
+				g_ucnt = uCnt;
+				lastAction = 14;
+				if (uCnt < uTIM->CCR1) {
+					// already overflown
+					lastAction = 15;
+					sCnt = sTIM->CNT - 1; // reread sCnt but take overflow into account
+					// __BKPT(0);
+				}
+				if (sCnt == times.s) { // sTIM already reached target wakeup value
+					// so this is our final uTIM IRQ
+					bit::clear(uTIM->DIER, TIM_DIER_CC1IE);
+					disable_all_tim_interrupts();
+					targetWakeupTime.reset();
+					Kernel::timerIsr();
+					return;
+				} else {
+					// assert(sCnt < times.s);
+					assert();
+					// more uTIM ticks (probably only 1) is yet to come
+				}
+			} break;
 
-    // For debug builds, set registers to initial values that are easy to identify on the stack.
-#if DEBUG
-    context->r2 = 0x22222222;
-    context->r3 = 0x33333333;
-    context->r4 = 0x44444444;
-    context->r5 = 0x55555555;
-    context->r6 = 0x66666666;
-    context->r7 = 0x77777777;
-    context->r8 = 0x88888888;
-    context->r9 = 0x99999999;
-    context->r10 = 0xaaaaaaaa;
-    context->r11 = 0xbbbbbbbb;
-    context->r12 = 0xcccccccc;
-#endif
+			default: assert();
+		}
+	}
 
-    // Write a check value to the bottom of the stack.
-    *thread->m_stackBottom = kStackCheckValue;
-}
+	extern "C" void sTIM_IRQHandler(void) {
+		sTIM->SR = 0; // clear all interrupt flags, we use CC1IF only
+		handlePossibleWakeupInterrupt(WakeInterruptSource::STIM);
+	}
 
-// Provide atomic operations for Cortex-M0+ that doesn't have load/store exclusive
-// instructions. We just have to disable interrupts.
-#if (__CORTEX_M < 3)
-int8_t ar_atomic_add8(volatile int8_t * value, int8_t delta)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    __DSB();
-    int8_t originalValue = *value;
-    *value += delta;
-    __set_PRIMASK(primask);
-    return originalValue;
-}
+	extern "C" void uTIM_IRQHandler(void) {
+		uTIM->SR = 0; // clear all interrupt flags, we use CC1IF only
+		handlePossibleWakeupInterrupt(WakeInterruptSource::UTIM);
+	}
 
-int16_t ar_atomic_add16(volatile int16_t * value, int16_t delta)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    __DSB();
-    int16_t originalValue = *value;
-    *value += delta;
-    __set_PRIMASK(primask);
-    return originalValue;
-}
+	//! Schedules next interrupt from timer.
+	//!
+	//! @param enables/disables timer
+	//! @param configures delay of next interrupt from timer
+	//! @return real value of delay, because clamping may occur
+	//!     returns 0 when timer does not run or is delay:_us is 0
+	//!     and interrupt is fired up immediately
+	void Port::set_wakeup_time(std::optional<Time> time_) {
+		// TODO: rethink if this is necessary
+		lastAction = 100;
+		disable_all_tim_interrupts();
+		lastAction = 110;
+		fastDispatch = 0;
 
-int32_t ar_atomic_add32(volatile int32_t * value, int32_t delta)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    __DSB();
-    int32_t originalValue = *value;
-    *value += delta;
-    __set_PRIMASK(primask);
-    return originalValue;
-}
+		if (time_.has_value()) {
+			const auto time = time_.value(); 
+			TimePair times(time.in_us() / uTIM_PERIOD.in_us(), time.in_us() % uTIM_PERIOD.in_us());
+			targetWakeupTime = times;
 
-bool ar_atomic_cas8(volatile int8_t * value, int8_t expectedValue, int8_t newValue)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    __DSB();
-    int8_t oldValue = *value;
-    if (oldValue == expectedValue)
-    {
-        *value = newValue;
-        __set_PRIMASK(primask);
-        return true;
-    }
-    __set_PRIMASK(primask);
-    return false;
-}
+			auto now = Time::now();
 
-bool ar_atomic_cas16(volatile int16_t * value, int16_t expectedValue, int16_t newValue)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    __DSB();
-    int16_t oldValue = *value;
-    if (oldValue == expectedValue)
-    {
-        *value = newValue;
-        __set_PRIMASK(primask);
-        return true;
-    }
-    __set_PRIMASK(primask);
-    return false;
-}
+			// wake is in past, fire IRQ immediately
+			if (time <= now) {
+				fastDispatch = 3;
+				lastAction = 3;
+				NVIC_SetPendingIRQ(uTIM_IRQn);
+				return;
+			}
 
-bool ar_atomic_cas32(volatile int32_t * value, int32_t expectedValue, int32_t newValue)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    __DSB();
-    int32_t oldValue = *value;
-    if (oldValue == expectedValue)
-    {
-        *value = newValue;
-        __set_PRIMASK(primask);
-        return true;
-    }
-    __set_PRIMASK(primask);
-    return false;
-}
-#endif // (__CORTEX_M < 3)
+			// ok, wakeup is in future (at leastfor snapshotted "now" value)
+			if (times.s == sTIM->CNT) {
+				// wakeup should happen in this whole sTIM tick
+				// __BKPT(0);
+				lastAction = 101;
+				uTIM->CCR1 = times.u;
+				uTIM->SR = 0; // clear all irq flags
+				bit::set(uTIM->DIER, TIM_DIER_CC1IE);
+				if (uTIM->CNT >= uTIM->CCR1 || times.s != sTIM->CNT) {
+					// we may have missed cmp event for irq generation
+					// or sTIM overflown (eg. on S:999 -> S+1:000) (we'd be 1 sTIM tick late)
+					lastAction = 1;
+					fastDispatch = 1;
+					NVIC_SetPendingIRQ(uTIM_IRQn); // manually set pending
+				}
+			} else {
+				lastAction = 102;
+				// it's worth to use two step wakeup (sTIM->uTIM->wake)
+				sTIM->CCR1 = times.s;
+				bit::set(sTIM->DIER, TIM_DIER_CC1IE);
 
-extern "C" void sTIM_IRQHandler(void)
-{
-    sTIM->SR = 0;// clear all interrupt flags, we use CC1IF only
-    ar_kernel_periodic_timer_isr();
-}
+				// we may have configured tim too late and possibly missed interrupt opportunity
+				if (sTIM->CNT >= sTIM->CCR1) {
+					lastAction = 5;
+					bit::clear(sTIM->DIER, TIM_DIER_CC1IE);
+					sTIM->SR = 0;
+					NVIC_SetPendingIRQ(sTIM_IRQn); // make sure, that irq fires
+					return;
+				}
+			}
 
-uint32_t ar_port_yield_isr(uint32_t topOfStack, uint32_t isExtendedFrame)
-{
-#if __FPU_USED
-    // Save whether there is an extended frame.
-    if (g_ar.currentThread)
-    {
-        g_ar.currentThread->m_portData.m_hasExtendedFrame = isExtendedFrame;
-    }
-#endif // __FPU_USED
+			// recheck if we did not miss target time
+			if (time <= Time::now()) {
+				disable_all_tim_interrupts();
+				fastDispatch = 2;
+				lastAction = 2;
+				NVIC_SetPendingIRQ(uTIM_IRQn);
+				return;
+			}
+		} else {
+			lastAction = 6;
+			disable_all_tim_interrupts(); // just don't fire interrupts on compare
+			targetWakeupTime.reset();
+		}
+	}
 
-    // Run the scheduler.
-    uint32_t stack = ar_kernel_yield_isr(topOfStack);
-
-#if __FPU_USED
-    // Pass whether there is an extended frame back to the asm code.
-    g_ar_hasExtendedFrame = g_ar.currentThread->m_portData.m_hasExtendedFrame;
-#endif // __FPU_USED
-
-    return stack;
-}
-
-#if DEBUG
-void ar_port_service_call()
-{
-    assert(g_ar.lockCount == 0);
-    SCB->ICSR |= SCB_ICSR_PENDSVSET_Msk;
-    __DSB();
-    __ISB();
-}
-#endif // DEBUG
-
-//TODO: move ar_get_microseconds() somewhere else and redirect to ar_port_get_time_absolute_us() ?
-WEAK uint64_t ar_get_microseconds()
-{
-    return ar_port_get_time_absolute_us();
-}
-
-#if AR_ENABLE_TRACE
-void ar_trace_init()
-{
-}
-
-//! @brief Send one trace event word via ITM port 31.
-void ar_trace_1(uint8_t eventID, uint32_t data)
-{
-    if (ITM->TCR & ITM_TCR_ITMENA_Msk)
-    {
-        // Wait until we can send the event.
-        while (!ITM->PORT[31].u32)
-        {
-        }
-
-        // Event consists of 8-bit event ID plus 24-bits of event data.
-        ITM->PORT[31].u32 = (static_cast<uint32_t>(eventID) << 24) | (data & 0x00ffffff);
-    }
-}
-
-//! @brief Send a 2-word trace event via ITM ports 31 and 30.
-void ar_trace_2(uint8_t eventID, uint32_t data0, void * data1)
-{
-    if (ITM->TCR & ITM_TCR_ITMENA_Msk)
-    {
-        // Wait until we can send the event.
-        while (!ITM->PORT[31].u32)
-        {
-        }
-
-        // Event consists of 8-bit event ID plus 24-bits of event data.
-        ITM->PORT[31].u32 = (static_cast<uint32_t>(eventID) << 24) | (data0 & 0x00ffffff);
-
-        // Wait until we can send the event.
-        while (!ITM->PORT[30].u32)
-        {
-        }
-
-        // Send second data on port 30.
-        ITM->PORT[30].u32 = reinterpret_cast<uint32_t>(data1);
-    }
-}
-#endif // AR_ENABLE_TRACE
+	std::uint64_t Port::get_time_absolute_us() {
+		std::uint16_t us_preread = uTIM->CNT;
+		std::uint32_t ticks = sTIM->CNT;
+		std::uint16_t us = uTIM->CNT;
+		if (us_preread > us) { // overflow occurred during reading
+			ticks = sTIM->CNT;
+		}
+		return static_cast<std::uint64_t>(ticks) * 1000 + us;
+	}
+} // namespace Ar
 
 //------------------------------------------------------------------------------
 // EOF

@@ -35,8 +35,8 @@
 #if !defined(_ARGON_H_)
 #define _ARGON_H_
 
-#include "ar_kernel.h"
-#include "ar_classes.h"
+#include "ar_kernel.hpp"
+#include "ar_classes.hpp"
 
 #endif // _ARGON_H_
 //------------------------------------------------------------------------------

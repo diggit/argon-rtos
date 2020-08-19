@@ -72,7 +72,7 @@ _LABEL(_continue_save)
 
         // Invoke scheduler. r0 is the sp, r1 is whether there was an extended frame.
         // On return, r0 contains the stack pointer for the new thread.
-        ldr     r12, =ar_port_yield_isr
+        ldr     r12, =yield_isr
         blx     r12
 
         // Unstack saved registers.

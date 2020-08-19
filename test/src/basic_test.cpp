@@ -145,7 +145,7 @@ void x_thread(void * arg)
 {
     Ar::Thread * self = Ar::Thread::getCurrent();
     const char * myName = self->getName();
-    ar_status_t status;
+    Ar::Status status;
 
     while (1)
     {
@@ -180,7 +180,7 @@ void y_thread(void * arg)
 {
     Ar::Thread * self = Ar::Thread::getCurrent();
     const char * myName = self->getName();
-    ar_status_t status;
+    Ar::Status status;
 
     while (1)
     {

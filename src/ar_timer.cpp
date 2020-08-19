@@ -31,298 +31,203 @@
  * @brief Source for Ar microkernel timers.
  */
 
-#include "ar_internal.h"
-#include <string.h>
-#include <assert.h>
+#include "argon/ar_timer.hpp"
+#include "argon/ar_kernel.hpp"
+#include "ar_common.hpp"
+#include "ar_port.hpp"
+#include "ar_assert.hpp"
 
-using namespace Ar;
+#include <cstring>
+#include <cstdint>
 
-//------------------------------------------------------------------------------
-// Code
-//------------------------------------------------------------------------------
+namespace Ar {
 
-static ar_status_t ar_timer_start_internal(ar_timer_t * timer, uint32_t wakeupTime);
-static void ar_timer_deferred_start(void * object, void * object2);
-static ar_status_t ar_timer_stop_internal(ar_timer_t * timer);
-static void ar_timer_deferred_stop(void * object, void * object2);
+	//------------------------------------------------------------------------------
+	// Code
+	//------------------------------------------------------------------------------
 
-//------------------------------------------------------------------------------
-// Code
-//------------------------------------------------------------------------------
+	// See ar_kernel.h for documentation of this function.
+	Timer::Timer(const char *name, Timer::Entry callback, void *param, Timer::Mode timerMode, Duration delay) :
+		m_activeNode(this), m_callback(timer_wrapper), m_param(param), m_mode(timerMode), m_delay(delay), m_wakeupTime(Time::now()), m_userCallback(callback) {
+		Ar::assert(callback && delay);
+		Ar::assert(!Ar::Port::get_irq_state());
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_timer_create(ar_timer_t * timer, const char * name, ar_timer_entry_t callback, void * param, ar_timer_mode_t timerMode, uint32_t delay)
-{
-    if (!timer || !callback || !delay)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
-
-    memset(timer, 0, sizeof(ar_timer_t));
-
-    timer->m_name = name ? name : AR_ANONYMOUS_OBJECT_NAME;
-    timer->m_callback = callback;
-    timer->m_param = param;
-    timer->m_mode = timerMode;
-    timer->m_delay = ar_milliseconds_to_ticks(delay);
-    timer->m_activeNode.m_obj = timer;
+		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
 
 #if AR_GLOBAL_OBJECT_LISTS
-    timer->m_createdNode.m_obj = timer;
-    g_ar_objects.timers.add(&timer->m_createdNode);
+		timer->m_createdNode.m_obj = timer;
+		g_ar_objects.timers.add(&timer->m_createdNode);
 #endif
+	}
 
-    return kArSuccess;
-}
+	// See ar_kernel.h for documentation of this function.
+	Timer::~Timer() {
+		Ar::assert(!Port::get_irq_state());
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_timer_delete(ar_timer_t * timer)
-{
-    if (!timer)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
-
-    ar_timer_stop(timer);
+		stop();
 
 #if AR_GLOBAL_OBJECT_LISTS
-    g_ar_objects.timers.remove(&timer->m_createdNode);
+		g_ar_objects.timers.remove(&timer->m_createdNode);
 #endif
+	}
 
-    return kArSuccess;
-}
+	//! @brief Handles starting or restarting a timer.
+	Ar::Status Timer::start_internal(Ar::Time wakeupTime) {
+		KernelLock guard;
 
-//! @brief Handles starting or restarting a timer.
-static ar_status_t ar_timer_start_internal(ar_timer_t * timer, uint32_t wakeupTime)
-{
-    KernelLock guard;
+		Ar::assert(m_runLoop);
 
-    assert(timer->m_runLoop);
+		// Handle a timer that is already active.
+		if (m_isActive) { m_runLoop->m_timers.remove(&m_activeNode); }
 
-    // Handle a timer that is already active.
-    if (timer->m_isActive)
-    {
-        timer->m_runLoop->m_timers.remove(timer);
-    }
+		m_wakeupTime = wakeupTime;
+		m_isActive = true;
 
-    timer->m_wakeupTime = wakeupTime;
-    timer->m_isActive = true;
+		m_runLoop->m_timers.add(&m_activeNode);
 
-    timer->m_runLoop->m_timers.add(timer);
+		// Wake runloop so it will recompute its sleep time.
+		m_runLoop->wake();
 
-    // Wake runloop so it will recompute its sleep time.
-    ar_runloop_wake(timer->m_runLoop);
+		return Ar::Status::success;
+	}
 
-    return kArSuccess;
-}
+	void Timer::deferred_start(void *object, void *object2) {
+		if (!Ar::assert(object)) { return; };
+		auto timer = reinterpret_cast<Timer *>(object);
+		if (!assert(timer->m_deferredWakeupTime.has_value())) {return;}
+		timer->start_internal(timer->m_deferredWakeupTime.value());
+	}
 
-static void ar_timer_deferred_start(void * object, void * object2)
-{
-    ar_timer_start_internal(reinterpret_cast<ar_timer_t *>(object), reinterpret_cast<uint32_t>(object2));
-}
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Timer::start() {
+		if (!m_runLoop) { return Status::timerNoRunloop; }
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_timer_start(ar_timer_t * timer)
-{
-    if (!timer)
-    {
-        return kArInvalidParameterError;
-    }
-    if (!timer->m_runLoop)
-    {
-        return kArTimerNoRunLoop;
-    }
+		// The callback should have been verified by the create function.
+		Ar::assert(m_callback);
 
-    // The callback should have been verified by the create function.
-    assert(timer->m_callback);
+		auto wakeupTime = Time::now() + m_delay;
 
-    uint32_t wakeupTime = ar_get_tick_count() + timer->m_delay;
+		// Handle irq state by deferring the operation.
+		if (Port::get_irq_state()) {
+			m_deferredWakeupTime = wakeupTime; // save for deferred execution
+			return Kernel::postDeferredAction(Timer::deferred_start, this, nullptr);
+		}
 
-    // Handle irq state by deferring the operation.
-    if (ar_port_get_irq_state())
-    {
-        return g_ar.deferredActions.post(ar_timer_deferred_start, timer, reinterpret_cast<void *>(wakeupTime));
-    }
+		return start_internal(wakeupTime);
+	}
 
-    return ar_timer_start_internal(timer, wakeupTime);
-}
+	Ar::Status Timer::stop_internal() {
+		KernelLock guard;
 
-static ar_status_t ar_timer_stop_internal(ar_timer_t * timer)
-{
-    KernelLock guard;
+		if (m_runLoop) {
+			m_runLoop->m_timers.remove(&m_activeNode);
 
-    if (timer->m_runLoop)
-    {
-        timer->m_runLoop->m_timers.remove(timer);
+			// Wake runloop so it will recompute its sleep time.
+			m_runLoop->wake();
+		}
 
-        // Wake runloop so it will recompute its sleep time.
-        ar_runloop_wake(timer->m_runLoop);
-    }
+		// m_wakeupTime = 0; //TODO: is it necessary?
+		m_isActive = false;
 
-    timer->m_wakeupTime = 0;
-    timer->m_isActive = false;
+		return Ar::Status::success;
+	}
 
-    return kArSuccess;
-}
+	void Timer::deferred_stop(void *object, void *object2) {
+		if (!Ar::assert(object)) { return; };
+		reinterpret_cast<Timer *>(object)->stop_internal();
+	}
 
-static void ar_timer_deferred_stop(void * object, void * object2)
-{
-    ar_timer_stop_internal(reinterpret_cast<ar_timer_t *>(object));
-}
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Timer::stop() {
+		if (!m_isActive) { return Status::timerNotRunningError; }
+		if (!m_runLoop) { return Status::timerNoRunloop; }
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_timer_stop(ar_timer_t * timer)
-{
-    if (!timer)
-    {
-        return kArInvalidParameterError;
-    }
-    if (!timer->m_isActive)
-    {
-        return kArTimerNotRunningError;
-    }
-    if (!timer->m_runLoop)
-    {
-        return kArTimerNoRunLoop;
-    }
+		// Handle irq state by deferring the operation.
+		if (Port::get_irq_state()) { return Kernel::postDeferredAction(Timer::deferred_stop, this); }
 
-    // Handle irq state by deferring the operation.
-    if (ar_port_get_irq_state())
-    {
-        return g_ar.deferredActions.post(ar_timer_deferred_stop, timer);
-    }
+		return stop_internal();
+	}
 
-    return ar_timer_stop_internal(timer);
-}
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Timer::setDelay(Duration delay) {
+		if (!delay) { return Ar::Status::invalidParameterError; }
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_timer_set_delay(ar_timer_t * timer, uint32_t delay)
-{
-    if (!timer || !delay)
-    {
-        return kArInvalidParameterError;
-    }
+		m_delay = delay;
 
-    timer->m_delay = ar_milliseconds_to_ticks(delay);
+		// If the timer is running, we need to restart it, unless it is a periodic
+		// timer whose callback is currently executing. In that case, the timer will
+		// automatically be rescheduled for us, so if we did it here then it would be
+		// rescheduled twice causing a double delay.
+		if (m_isActive && !(m_isRunning && m_mode == Mode::periodicTimer)) { start(); }
 
-    // If the timer is running, we need to restart it, unless it is a periodic
-    // timer whose callback is currently executing. In that case, the timer will
-    // automatically be rescheduled for us, so if we did it here then it would be
-    // rescheduled twice causing a double delay.
-    if (timer->m_isActive && !(timer->m_isRunning && timer->m_mode == kArPeriodicTimer))
-    {
-        ar_timer_start(timer);
-    }
+		return Ar::Status::success;
+	}
 
-    return kArSuccess;
-}
+	//! @brief Execute callbacks for all expired timers.
+	//!
+	//! While a timer callback is running, the m_isRunning flag on the timer is set to true.
+	//! When the callback returns, a one shot timer is stopped while a periodic timer is
+	//! rescheduled based on its delay. If a periodic timer's callback runs so long that the next
+	//! wakeup time is in the past, it will be rescheduled to a time in the future that is aligned
+	//! with the period.
+	void Timer::run_timers(List &timersList) {
+		// Check if we need to handle a timer.
+		if (timersList.m_head) {
+			List::Node *timerNode = timersList.m_head;
+			do {
+				auto *timer = timerNode->getObject<Timer>();
+				Ar::assert(timer);
 
-//! @brief Execute callbacks for all expired timers.
-//!
-//! While a timer callback is running, the m_isRunning flag on the timer is set to true.
-//! When the callback returns, a one shot timer is stopped while a periodic timer is
-//! rescheduled based on its delay. If a periodic timer's callback runs so long that the next
-//! wakeup time is in the past, it will be rescheduled to a time in the future that is aligned
-//! with the period.
-void ar_kernel_run_timers(ar_list_t & timersList)
-{
-    // Check if we need to handle a timer.
-    if (timersList.m_head)
-    {
-        ar_list_node_t * timerNode = timersList.m_head;
-        do {
-            ar_timer_t * timer = timerNode->getObject<ar_timer_t>();
-            assert(timer);
+				// Exit loop if all remaining timers on the list wake up in the future.
+				if (timer->m_wakeupTime > Time::now()) { break; }
 
-            // Exit loop if all remaining timers on the list wake up in the future.
-            if (timer->m_wakeupTime > ar_get_tick_count())
-            {
-                break;
-            }
+				// Invoke the timer callback.
+				Ar::assert(timer->m_callback);
+				timer->m_isRunning = true;
+				timer->m_callback(timer, timer->m_param);
+				timer->m_isRunning = false;
 
-            // Invoke the timer callback.
-            assert(timer->m_callback);
-            timer->m_isRunning = true;
-            timer->m_callback(timer, timer->m_param);
-            timer->m_isRunning = false;
+				// Check that the timer wasn't stopped in its callback.
+				if (timer->m_isActive) {
+					switch (timer->m_mode) {
+						case Mode::oneShotTimer:
+							// Stop a one shot timer after it has fired.
+							timer->stop();
+							break;
 
-            // Check that the timer wasn't stopped in its callback.
-            if (timer->m_isActive)
-            {
-                switch (timer->m_mode)
-                {
-                    case kArOneShotTimer:
-                        // Stop a one shot timer after it has fired.
-                        ar_timer_stop(timer);
-                        break;
+						case Mode::periodicTimer: {
+							// Restart a periodic timer without introducing (much) jitter. Also handle
+							// the cases where the timer callback ran longer than the next wakeup.
+							auto wakeupTime = timer->m_wakeupTime + timer->m_delay;
+							// in case we missed next wakeup time
+							if (wakeupTime < Time::now()) {
+								// Compute the delay to the next wakeup in the future that is aligned
+								// to the timer's period. (skip tick but don't shift phase)
+								const auto extrayDelay = timer->m_delay * (static_cast<int>((Time::now() - wakeupTime) / timer->m_delay) + 1);
+								wakeupTime += extrayDelay;
+							}
+							timer->start_internal(wakeupTime);
+							break;
+						}
+					}
+				}
 
-                    case kArPeriodicTimer:
-                    {
-                        // Restart a periodic timer without introducing (much) jitter. Also handle
-                        // the cases where the timer callback ran longer than the next wakeup.
-                        uint32_t wakeupTime = timer->m_wakeupTime + timer->m_delay;
-                        if (wakeupTime == ar_get_tick_count())
-                        {
-                            // Push the wakeup out another period into the future.
-                            wakeupTime += timer->m_delay;
-                        }
-                        else if (wakeupTime < ar_get_tick_count())
-                        {
-                            // Compute the delay to the next wakeup in the future that is aligned
-                            // to the timer's period.
-                            uint32_t delta = (ar_get_tick_count() - timer->m_wakeupTime + timer->m_delay - 1)
-                                                / timer->m_delay * timer->m_delay;
-                            wakeupTime = timer->m_wakeupTime + delta;
-                        }
-                        ar_timer_start_internal(timer, wakeupTime);
-                        break;
-                    }
-                }
-            }
+				timerNode = timerNode->m_next;
+			} while (timerNode != timersList.m_head);
+		}
+	}
 
-            timerNode = timerNode->m_next;
-        } while (timerNode != timersList.m_head);
-    }
-}
+	//! @brief Sort timers ascending by wakeup time.
+	bool Timer::sort_by_wakeup(List::Node *a, List::Node *b) {
+		Timer *timerA = a->getObject<Timer>();
+		Timer *timerB = b->getObject<Timer>();
+		return (timerA->m_isActive && timerA->m_wakeupTime < timerB->m_wakeupTime);
+	}
 
-//! @brief Sort timers ascending by wakeup time.
-bool ar_timer_sort_by_wakeup(ar_list_node_t * a, ar_list_node_t * b)
-{
-    ar_timer_t * timerA = a->getObject<ar_timer_t>();
-    ar_timer_t * timerB = b->getObject<ar_timer_t>();
-    return (timerA->m_isActive && timerA->m_wakeupTime < timerB->m_wakeupTime);
-}
+	void Timer::timer_wrapper(Timer *timer, void *arg) {
+		Timer *_this = static_cast<Timer *>(timer);
+		Ar::assert(_this);
+		if (_this->m_userCallback) { _this->m_userCallback(_this, arg); }
+	}
 
-const char * ar_timer_get_name(ar_timer_t * timer)
-{
-    return timer ? timer->m_name : NULL;
-}
-
-ar_status_t Timer::init(const char * name, callback_t callback, void * param, ar_timer_mode_t timerMode, uint32_t delay)
-{
-    m_userCallback = callback;
-
-    return ar_timer_create(this, name, timer_wrapper, param, timerMode, delay);
-}
-
-void Timer::timer_wrapper(ar_timer_t * timer, void * arg)
-{
-    Timer * _this = static_cast<Timer *>(timer);
-    assert(_this);
-    if (_this->m_userCallback)
-    {
-        _this->m_userCallback(_this, arg);
-    }
-}
-
-//------------------------------------------------------------------------------
-// EOF
-//------------------------------------------------------------------------------
+} // namespace Ar

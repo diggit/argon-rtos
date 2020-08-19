@@ -31,242 +31,164 @@
  * @brief Implementation of Ar microkernel queue.
  */
 
-#include "ar_internal.h"
-#include <string.h>
+#include "argon/ar_queue.hpp"
+#include "argon/ar_thread.hpp"
+#include "argon/ar_kernel.hpp"
+#include "ar_port.hpp"
+#include "ar_assert.hpp"
+#include <cstring>
+#include <cstdint>
 
-using namespace Ar;
+namespace Ar {
 
-//------------------------------------------------------------------------------
-// Macros
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Macros
+	//------------------------------------------------------------------------------
 
-//! Returns a uint8_t * to the first byte of element @a i of the queue.
-//!
-//! @param q The queue object.
-//! @param i Index of the queue element, base 0.
-#define QUEUE_ELEMENT(q, i) (&(q)->m_elements[(q)->m_elementSize * (i)])
+	//! Returns a uint8_t * to the first byte of element @a i of the queue.
+	//!
+	//! @param q The queue object.
+	//! @param i Index of the queue element, base 0.
+	// #define QUEUE_ELEMENT(q, i) (&(q)->m_elements[(q)->m_elementSize * (i)])
 
-//------------------------------------------------------------------------------
-// Prototypes
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Implementation
+	//------------------------------------------------------------------------------
 
-static ar_status_t ar_queue_send_internal(ar_queue_t * queue, const void * element, uint32_t timeout);
-static void ar_queue_deferred_send(void * object, void * object2);
+	// See ar_kernel.h for documentation of this function.
+	Queue::Queue(const char *name, void *storage, std::size_t elementSize, std::size_t capacity) :
+		m_elements(reinterpret_cast<uint8_t *>(storage)), m_elementSize(elementSize), m_capacity(capacity), m_runLoopNode(this) {
 
-//------------------------------------------------------------------------------
-// Implementation
-//------------------------------------------------------------------------------
+		if (!Ar::assert(storage && elementSize && capacity)) { return; }
+		Ar::assert(!Port::get_irq_state());
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_queue_create(ar_queue_t * queue, const char * name, void * storage, unsigned elementSize, unsigned capacity)
-{
-    if (!queue || !storage || !elementSize || !capacity)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
-
-    memset(queue, 0, sizeof(ar_queue_t));
-
-    queue->m_name = name ? name : AR_ANONYMOUS_OBJECT_NAME;
-    queue->m_elements = reinterpret_cast<uint8_t *>(storage);
-    queue->m_elementSize = elementSize;
-    queue->m_capacity = capacity;
-
-    queue->m_runLoopNode.m_obj = queue;
+		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
 
 #if AR_GLOBAL_OBJECT_LISTS
-    queue->m_createdNode.m_obj = queue;
-    g_ar_objects.queues.add(&queue->m_createdNode);
+		queue->m_createdNode.m_obj = queue;
+		g_ar_objects.queues.add(&queue->m_createdNode);
 #endif // AR_GLOBAL_OBJECT_LISTS
+	}
 
-    return kArSuccess;
-}
+	// See ar_kernel.h for documentation of this function.
+	Queue::~Queue() {
+		Ar::assert(!Port::get_irq_state());
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_queue_delete(ar_queue_t * queue)
-{
-    if (!queue)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
+		// Unblock all threads blocked on this queue.
+		while (m_sendBlockedList.m_head) { m_sendBlockedList.getHead<Thread>()->unblockWithStatus(m_sendBlockedList, Status::objectDeletedError); }
 
-    // Unblock all threads blocked on this queue.
-    ar_thread_t * thread;
-    while (queue->m_sendBlockedList.m_head)
-    {
-        thread = queue->m_sendBlockedList.getHead<ar_thread_t>();
-        thread->unblockWithStatus(queue->m_sendBlockedList, kArObjectDeletedError);
-    }
-
-    while (queue->m_receiveBlockedList.m_head)
-    {
-        thread = queue->m_receiveBlockedList.getHead<ar_thread_t>();
-        thread->unblockWithStatus(queue->m_receiveBlockedList, kArObjectDeletedError);
-    }
+		while (m_receiveBlockedList.m_head) { m_receiveBlockedList.getHead<Thread>()->unblockWithStatus(m_receiveBlockedList, Status::objectDeletedError); }
 
 #if AR_GLOBAL_OBJECT_LISTS
-    g_ar_objects.queues.remove(&queue->m_createdNode);
+		g_ar_objects.queues.remove(&queue->m_createdNode);
 #endif // AR_GLOBAL_OBJECT_LISTS
+	}
 
-    return kArSuccess;
-}
+	Ar::Status Queue::send_internal(const void *element, std::optional<Duration> timeout) {
+		KernelLock guard;
 
-static ar_status_t ar_queue_send_internal(ar_queue_t * queue, const void * element, uint32_t timeout)
-{
-    KernelLock guard;
+		// Check for full queue.
+		while (m_count >= m_capacity) {
+			// If the queue is full and a zero timeout was given, return immediately.
+			if (timeout.has_value() && timeout.value()) { return Status::timeoutError; }
 
-    // Check for full queue.
-    while (queue->m_count >= queue->m_capacity)
-    {
-        // If the queue is full and a zero timeout was given, return immediately.
-        if (timeout == kArNoTimeout)
-        {
-            return kArQueueFullError;
-        }
+			// Otherwise block until the queue has room.
+			auto *thread = Thread::getCurrent();
+			thread->block(m_sendBlockedList, timeout);
 
-        // Otherwise block until the queue has room.
-        ar_thread_t * thread = g_ar.currentThread;
-        thread->block(queue->m_sendBlockedList, timeout);
+			// We're back from the scheduler.
+			// Check for errors and exit early if there was one.
+			if (thread->m_unblockStatus != Ar::Status::success) {
+				// Probably timed out waiting for room in the queue.
+				m_sendBlockedList.remove(&thread->m_blockedNode);
+				return thread->m_unblockStatus;
+			}
+		}
 
-        // We're back from the scheduler.
-        // Check for errors and exit early if there was one.
-        if (thread->m_unblockStatus != kArSuccess)
-        {
-            // Probably timed out waiting for room in the queue.
-            queue->m_sendBlockedList.remove(&thread->m_blockedNode);
-            return thread->m_unblockStatus;
-        }
-    }
+		// Copy queue element into place.
+		auto *elementSlot = QUEUE_ELEMENT(m_tail);
 
-    // Copy queue element into place.
-    uint8_t * elementSlot = QUEUE_ELEMENT(queue, queue->m_tail);
-    memcpy(elementSlot, element, queue->m_elementSize);
+		std::memcpy(elementSlot, element, m_elementSize);
 
-    // Update queue tail pointer and count.
-    if (++queue->m_tail >= queue->m_capacity)
-    {
-        queue->m_tail = 0;
-    }
-    ++queue->m_count;
+		// Update queue tail pointer and count.
+		if (++m_tail >= m_capacity) { m_tail = 0; }
+		++m_count;
 
-    // Are there any threads waiting to receive?
-    if (queue->m_receiveBlockedList.m_head)
-    {
-        // Unblock the head of the blocked list.
-        ar_thread_t * thread = queue->m_receiveBlockedList.getHead<ar_thread_t>();
-        thread->unblockWithStatus(queue->m_receiveBlockedList, kArSuccess);
-    }
-    // Is the queue associated with a runloop?
-    else if (queue->m_runLoop)
-    {
-        // Add this queue to the list of pending queues for the runloop, but first check
-        // whether the queue is already pending so we don't attempt to add it twice.
-        if (!queue->m_runLoop->m_queues.contains(&queue->m_runLoopNode))
-        {
-            queue->m_runLoop->m_queues.add(queue);
-            ar_runloop_wake(queue->m_runLoop);
-        }
-    }
+		// Are there any threads waiting to receive?
+		if (m_receiveBlockedList.m_head) {
+			// Unblock the head of the blocked list.
+			m_receiveBlockedList.getHead<Thread>()->unblockWithStatus(m_receiveBlockedList, Ar::Status::success);
+		}
+		// Is the queue associated with a runloop?
+		else if (m_runLoop) {
+			// Add this queue to the list of pending queues for the runloop, but first check
+			// whether the queue is already pending so we don't attempt to add it twice.
+			auto &queues = m_runLoop->getQueues();
+			if (!queues.contains(&m_runLoopNode)) {
+				queues.add(&m_runLoopNode);
+				m_runLoop->wake();
+			}
+		}
 
-    return kArSuccess;
-}
+		return Ar::Status::success;
+	}
 
-static void ar_queue_deferred_send(void * object, void * object2)
-{
-    ar_queue_send_internal(reinterpret_cast<ar_queue_t *>(object), object2, kArNoTimeout);
-}
+	void Queue::deferred_send(void *object, void *object2) {
+		if (!Ar::assert(object)) { return; };
+		reinterpret_cast<Queue *>(object)->send_internal(object2, Duration::zero());
+	}
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_queue_send(ar_queue_t * queue, const void * element, uint32_t timeout)
-{
-    if (!queue || !element)
-    {
-        return kArInvalidParameterError;
-    }
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Queue::send(const void *element, std::optional<Duration> timeout) {
+		if (!element) { return Ar::Status::invalidParameterError; }
 
-    // Handle irq state by deferring the operation.
-    if (ar_port_get_irq_state())
-    {
-        return g_ar.deferredActions.post(ar_queue_deferred_send, queue, const_cast<void *>(element));
-    }
+		// Handle irq state by deferring the operation.
+		if (Port::get_irq_state()) { return Kernel::postDeferredAction(Queue::deferred_send, this, const_cast<void *>(element)); }
 
-    return ar_queue_send_internal(queue, element, timeout);
-}
+		return send_internal(element, timeout);
+	}
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_queue_receive(ar_queue_t * queue, void * element, uint32_t timeout)
-{
-    if (!queue || !element)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Queue::receive(void *element, std::optional<Duration> timeout) {
+		if (!element) { return Ar::Status::invalidParameterError; }
+		Ar::assert(!Port::get_irq_state());
 
-    {
-        KernelLock guard;
+		{
+			KernelLock guard;
 
-        // Check for empty queue.
-        while (queue->m_count == 0)
-        {
-            if (timeout == kArNoTimeout)
-            {
-                return kArQueueEmptyError;
-            }
+			// Check for empty queue.
+			while (m_count == 0) {
+				if (!timeout.value_or(Duration::zero())) { return Status::queueEmptyError; }
 
-            // Otherwise block until the queue has room.
-            ar_thread_t * thread = g_ar.currentThread;
-            thread->block(queue->m_receiveBlockedList, timeout);
+				// Otherwise block until the queue has room.
+				auto *thread = Thread::getCurrent();
+				thread->block(m_receiveBlockedList, timeout);
 
-            // We're back from the scheduler.
-            // Check for errors and exit early if there was one.
-            if (thread->m_unblockStatus != kArSuccess)
-            {
-                // Timed out waiting for the queue to not be empty, or another error occurred.
-                queue->m_receiveBlockedList.remove(&thread->m_blockedNode);
-                return thread->m_unblockStatus;
-            }
-        }
+				// We're back from the scheduler.
+				// Check for errors and exit early if there was one.
+				if (thread->m_unblockStatus != Ar::Status::success) {
+					// Timed out waiting for the queue to not be empty, or another error occurred.
+					m_receiveBlockedList.remove(&thread->m_blockedNode);
+					return thread->m_unblockStatus;
+				}
+			}
 
-        // Read out data.
-        uint8_t * elementSlot = QUEUE_ELEMENT(queue, queue->m_head);
-        memcpy(element, elementSlot, queue->m_elementSize);
+			// Read out data.
+			auto *elementSlot = QUEUE_ELEMENT(m_head);
+			std::memcpy(element, elementSlot, m_elementSize);
 
-        // Update queue head and count.
-        if (++queue->m_head >= queue->m_capacity)
-        {
-            queue->m_head = 0;
-        }
-        --queue->m_count;
+			// Update queue head and count.
+			if (++m_head >= m_capacity) { m_head = 0; }
+			--m_count;
 
-        // Are there any threads waiting to send?
-        if (queue->m_sendBlockedList.m_head)
-        {
-            // Unblock the head of the blocked list.
-            ar_thread_t * thread = queue->m_sendBlockedList.getHead<ar_thread_t>();
-            thread->unblockWithStatus(queue->m_sendBlockedList, kArSuccess);
-        }
-    }
+			// Are there any threads waiting to send?
+			if (m_sendBlockedList.m_head) {
+				// Unblock the head of the blocked list.
+				auto *thread = m_sendBlockedList.getHead<Thread>();
+				thread->unblockWithStatus(m_sendBlockedList, Ar::Status::success);
+			}
+		}
 
-    return kArSuccess;
-}
-
-// See ar_kernel.h for documentation of this function.
-const char * ar_queue_get_name(ar_queue_t * queue)
-{
-    return queue ? queue->m_name : NULL;
-}
-
-//------------------------------------------------------------------------------
-// EOF
-//------------------------------------------------------------------------------
+		return Ar::Status::success;
+	}
+} // namespace Ar

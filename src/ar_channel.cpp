@@ -31,201 +31,131 @@
  * @brief Source for Ar microkernel channels.
  */
 
-#include "ar_internal.h"
-#include <string.h>
-#include <assert.h>
+#include "argon/ar_channel.hpp"
+#include "argon/ar_thread.hpp"
+#include "argon/ar_kernel.hpp"
+#include "ar_assert.hpp"
+#include <cstring>
 
-using namespace Ar;
+namespace Ar {
 
-//------------------------------------------------------------------------------
-// Prototypes
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Code
+	//------------------------------------------------------------------------------
 
-static ar_status_t ar_channel_block(ar_channel_t * channel, ar_list_t & myDirList, void * value, uint32_t timeout);
-static ar_status_t ar_channel_send_receive(ar_channel_t * channel, bool isSending, ar_list_t & myDirList, ar_list_t & otherDirList, void * value, uint32_t timeout);
-static ar_status_t ar_channel_send_receive_internal(ar_channel_t * channel, bool isSending, ar_list_t & myDirList, ar_list_t & otherDirList, void * value, uint32_t timeout);
-static void ar_channel_deferred_send(void * object, void * object2);
+	// See ar_kernel.h for documentation of this function.
+	Channel::Channel(const char *name, std::size_t width) : m_width((width == 0) ? sizeof(void *) : width) {
+		Ar::assert(!Port::get_irq_state());
 
-//------------------------------------------------------------------------------
-// Code
-//------------------------------------------------------------------------------
-
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_channel_create(ar_channel_t * channel, const char * name, uint32_t width)
-{
-    if (!channel)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
-
-    memset(channel, 0, sizeof(ar_channel_t));
-    channel->m_name = name ? name : AR_ANONYMOUS_OBJECT_NAME;
-    channel->m_width = (width == 0) ? sizeof(void *) : width;
+		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
 
 #if AR_GLOBAL_OBJECT_LISTS
-    channel->m_createdNode.m_obj = channel;
-    g_ar_objects.channels.add(&channel->m_createdNode);
+		m_createdNode.m_obj = channel;
+		g_ar_objects.channels.add(&m_createdNode);
 #endif // AR_GLOBAL_OBJECT_LISTS
+	}
 
-    return kArSuccess;
-}
+	// See ar_kernel.h for documentation of this function.
+	Channel::~Channel() {
+		Ar::assert(!Port::get_irq_state());
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_channel_delete(ar_channel_t * channel)
-{
-    if (!channel)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
+		// Unblock all threads blocked on this channel.
+		Thread *thread;
+		while (m_blockedSenders.m_head) {
+			thread = m_blockedSenders.getHead<Thread>();
+			thread->unblockWithStatus(m_blockedSenders, Status::objectDeletedError);
+		}
 
-    // Unblock all threads blocked on this channel.
-    ar_thread_t * thread;
-    while (channel->m_blockedSenders.m_head)
-    {
-        thread = channel->m_blockedSenders.getHead<ar_thread_t>();
-        thread->unblockWithStatus(channel->m_blockedSenders, kArObjectDeletedError);
-    }
-
-    while (channel->m_blockedReceivers.m_head)
-    {
-        thread = channel->m_blockedReceivers.getHead<ar_thread_t>();
-        thread->unblockWithStatus(channel->m_blockedReceivers, kArObjectDeletedError);
-    }
+		while (m_blockedReceivers.m_head) {
+			thread = m_blockedReceivers.getHead<Thread>();
+			thread->unblockWithStatus(m_blockedReceivers, Status::objectDeletedError);
+		}
 
 #if AR_GLOBAL_OBJECT_LISTS
-    g_ar_objects.channels.remove(&channel->m_createdNode);
+		g_ar_objects.channels.remove(&channel->m_createdNode);
 #endif // AR_GLOBAL_OBJECT_LISTS
+	}
 
-    return kArSuccess;
-}
+	//! @brief Handles blocking a thread on a channel.
+	//!
+	//! The kernel must be locked prior to entry of this function.
+	Ar::Status Channel::block(List &myDirList, void *value, std::optional<Duration> timeout) {
+		// Nobody waiting, so we must block. Return immediately if the timeout is 0.
+		if (timeout.has_value() && !timeout.value()) { return Status::timeoutError; }
 
-//! @brief Handles blocking a thread on a channel.
-//!
-//! The kernel must be locked prior to entry of this function.
-ar_status_t ar_channel_block(ar_channel_t * channel, ar_list_t & myDirList, void * value, uint32_t timeout)
-{
-    // Nobody waiting, so we must block. Return immediately if the timeout is 0.
-    if (timeout == kArNoTimeout)
-    {
-        return kArTimeoutError;
-    }
+		// Block this thread on the channel. Save the value pointer into the thread
+		// object so the other side of this channel can access it.
+		auto thread = Thread::getCurrent();
+		thread->m_channelData = value;
+		thread->block(myDirList, timeout);
 
-    // Block this thread on the channel. Save the value pointer into the thread
-    // object so the other side of this channel can access it.
-    ar_thread_t * thread = g_ar.currentThread;
-    thread->m_channelData = value;
-    thread->block(myDirList, timeout);
+		// We're back from the scheduler. Check for errors and exit early if there was one.
+		if (thread->m_unblockStatus != Ar::Status::success) {
+			myDirList.remove(&thread->m_blockedNode);
+			return thread->m_unblockStatus;
+		}
 
-    // We're back from the scheduler. Check for errors and exit early if there was one.
-    if (thread->m_unblockStatus != kArSuccess)
-    {
-        myDirList.remove(&thread->m_blockedNode);
-        return thread->m_unblockStatus;
-    }
+		return Ar::Status::success;
+	}
 
-    return kArSuccess;
-}
+	Ar::Status Channel::send_receive_internal(bool isSending, List &myDirList, List &otherDirList, void *value, std::optional<Duration> timeout) {
+		KernelLock guard;
 
-static ar_status_t ar_channel_send_receive_internal(ar_channel_t * channel, bool isSending, ar_list_t & myDirList, ar_list_t & otherDirList, void * value, uint32_t timeout)
-{
-    KernelLock guard;
+		// Are there any blocked threads for the opposite direction of this call?
+		if (otherDirList.isEmpty()) {
+			return block(myDirList, value, timeout);
+		} else {
+			// Get the first thread blocked on this channel.
+			auto *thread = otherDirList.getHead<Thread>();
 
-    // Are there any blocked threads for the opposite direction of this call?
-    if (otherDirList.isEmpty())
-    {
-        return ar_channel_block(channel, myDirList, value, timeout);
-    }
-    else
-    {
-        // Get the first thread blocked on this channel.
-        ar_thread_t * thread = otherDirList.getHead<ar_thread_t>();
+			// Figure out the direction of the data transfer.
+			void *src;
+			void *dest;
+			if (isSending) {
+				src = value;
+				dest = thread->m_channelData;
+			} else {
+				src = thread->m_channelData;
+				dest = value;
+			}
 
-        // Figure out the direction of the data transfer.
-        void * src;
-        void * dest;
-        if (isSending)
-        {
-            src = value;
-            dest = thread->m_channelData;
-        }
-        else
-        {
-            src = thread->m_channelData;
-            dest = value;
-        }
+			// Do the transfer. Optimize word-sized channels so we don't have to call into memcpy().
+			// This is dangerous, what about std::uint8_t[4] ? Diabled...
+			// if (m_width == sizeof(uint32_t)) {
+			// 	*(uint32_t *)dest = *(uint32_t *)src;
+			// } else {
+			std::memcpy(dest, src, m_width);
+			// }
 
-        // Do the transfer. Optimize word-sized channels so we don't have to call into memcpy().
-        if (channel->m_width == sizeof(uint32_t))
-        {
-            *(uint32_t *)dest = *(uint32_t *)src;
-        }
-        else
-        {
-            memcpy(dest, src, channel->m_width);
-        }
+			// Unblock the other side.
+			thread->unblockWithStatus(otherDirList, Ar::Status::success);
+		}
 
-        // Unblock the other side.
-        thread->unblockWithStatus(otherDirList, kArSuccess);
-    }
+		return Ar::Status::success;
+	}
 
-    return kArSuccess;
-}
+	void Channel::deferred_send(void *object, void *object2) {
+		auto *channel = reinterpret_cast<Channel *>(object);
+		if(!Ar::assert(channel)) {return;}
+		channel->send_receive_internal(true, channel->m_blockedSenders, channel->m_blockedReceivers, object2, Duration::zero());
+	}
 
-static void ar_channel_deferred_send(void * object, void * object2)
-{
-    ar_channel_t * channel = reinterpret_cast<ar_channel_t *>(object);
-    ar_channel_send_receive_internal(channel, true, channel->m_blockedSenders, channel->m_blockedReceivers, object2, kArNoTimeout);
-}
+	//! @brief Common channel send/receive code.
+	Ar::Status Channel::send_receive(bool isSending, List &myDirList, List &otherDirList, void *value, std::optional<Duration> timeout) {
 
-//! @brief Common channel send/receive code.
-ar_status_t ar_channel_send_receive(ar_channel_t * channel, bool isSending, ar_list_t & myDirList, ar_list_t & otherDirList, void * value, uint32_t timeout)
-{
-    if (!channel)
-    {
-        return kArInvalidParameterError;
-    }
+		// Ensure that only 0 timeouts are specified when called from an IRQ handler.
+		if (Port::get_irq_state()) {
+			if (!isSending || (timeout.has_value() && timeout.value())) { return Ar::Status::notFromInterruptError; }
 
-    // Ensure that only 0 timeouts are specified when called from an IRQ handler.
-    if (ar_port_get_irq_state())
-    {
-        if (!isSending || timeout != 0)
-        {
-            return kArNotFromInterruptError;
-        }
+			// Handle irq state by deferring the operation.
+			return Kernel::postDeferredAction(Channel::deferred_send, this, value);
+		}
 
-        // Handle irq state by deferring the operation.
-        return g_ar.deferredActions.post(ar_channel_deferred_send, channel, value);
-    }
+		return send_receive_internal(isSending, myDirList, otherDirList, value, timeout);
+	}
 
-    return ar_channel_send_receive_internal(channel, isSending, myDirList, otherDirList, value, timeout);
-}
+	//------------------------------------------------------------------------------
+	// EOF
+	//------------------------------------------------------------------------------
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_channel_receive(ar_channel_t * channel, void * value, uint32_t timeout)
-{
-    return ar_channel_send_receive(channel, false, channel->m_blockedReceivers, channel->m_blockedSenders, value, timeout);
-}
-
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_channel_send(ar_channel_t * channel, const void * value, uint32_t timeout)
-{
-    return ar_channel_send_receive(channel, true, channel->m_blockedSenders, channel->m_blockedReceivers, const_cast<void *>(value), timeout);
-}
-
-// See ar_kernel.h for documentation of this function.
-const char * ar_channel_get_name(ar_channel_t * channel)
-{
-    return channel ? channel->m_name : NULL;
-}
-
-//------------------------------------------------------------------------------
-// EOF
-//------------------------------------------------------------------------------
+} // namespace Ar

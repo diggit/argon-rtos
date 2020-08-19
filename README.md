@@ -46,7 +46,7 @@ Ar::Semaphore theSem("s");
 
 void thread_fn(void * param)
 {
-    while (theSem.get() == kArSuccess)
+    while (theSem.get() == Ar::Status::success)
     {
         // do something
     }
@@ -67,7 +67,7 @@ ar_semaphore_t theSem;
 
 void thread_fn(void * param)
 {
-    while (ar_semaphore_get(theSem, kArInfiniteTimeout) == kArSuccess)
+    while (ar_semaphore_get(theSem, kArInfiniteTimeout) == Ar::Status::success)
     {
         // do something
     }

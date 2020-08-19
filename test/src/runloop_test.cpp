@@ -144,7 +144,7 @@ void x_thread(void * arg)
 {
     Ar::Thread * self = Ar::Thread::getCurrent();
     const char * myName = self->getName();
-    ar_status_t status;
+    Ar::Status status;
 
     while (1)
     {
@@ -179,7 +179,7 @@ void y_thread(void * arg)
 {
     Ar::Thread * self = Ar::Thread::getCurrent();
     const char * myName = self->getName();
-    ar_status_t status;
+    Ar::Status status;
 
     while (1)
     {
@@ -360,7 +360,7 @@ void rl_thread(void * arg)
     ar_runloop_t rl;
     ar_runloop_create(&rl, "rl", ar_thread_get_current());
 
-// ar_status_t ar_runloop_perform(ar_runloop_t * runloop, ar_runloop_function_t function, void * param);
+// Ar::Status ar_runloop_perform(ar_runloop_t * runloop, ar_runloop_function_t function, void * param);
 
     Ar::Timer myTimer("mine2", my_timer_fn, 0, kArPeriodicTimer, 500);
     ar_runloop_add_timer(&rl, &myTimer);
@@ -377,11 +377,11 @@ void rl_thread(void * arg)
 
         switch (result)
         {
-            case kArRunLoopError:
+            case kArRunloopError:
                 break;
-            case kArRunLoopStopped:
+            case kArRunloopStopped:
                 break;
-            case kArRunLoopQueueReceived:
+            case kArRunloopQueueReceived:
                 printf("runloop queue received\n");
                 if (obj == static_cast<ar_queue_t *>(&g_q))
                 {
@@ -389,7 +389,7 @@ void rl_thread(void * arg)
                     printf("  value = %d\n", v);
                 }
                 break;
-            case kArRunLoopChannelReceived:
+            case kArRunloopChannelReceived:
                 break;
             default:
                 break;
@@ -399,7 +399,7 @@ void rl_thread(void * arg)
 
 void rl2_thread(void * arg)
 {
-    Ar::RunLoop rl("rl2", ar_thread_get_current());
+    Ar::Runloop rl("rl2", ar_thread_get_current());
 
     while (true)
     {
@@ -451,7 +451,7 @@ int main(void)
     printf("sizeof(ar_mutex_t)=%d; sizeof(Mutex)=%d\r\n", sizeof(ar_mutex_t), sizeof(Ar::Mutex));
     printf("sizeof(ar_queue_t)=%d; sizeof(Queue)=%d\r\n", sizeof(ar_queue_t), sizeof(Ar::Queue));
     printf("sizeof(ar_timer_t)=%d; sizeof(Timer)=%d\r\n", sizeof(ar_timer_t), sizeof(Ar::Timer));
-    printf("sizeof(ar_runloop_t)=%d; sizeof(RunLoop)=%d\r\n", sizeof(ar_runloop_t), 0 /*sizeof(Ar::RunLoop)*/);
+    printf("sizeof(ar_runloop_t)=%d; sizeof(Runloop)=%d\r\n", sizeof(ar_runloop_t), 0 /*sizeof(Ar::Runloop)*/);
 #endif
 
 #if defined(__ICCARM__)

@@ -31,235 +31,153 @@
  * @brief Source for Ar microkernel mutexes.
  */
 
-#include "ar_internal.h"
-#include <string.h>
-#include <assert.h>
+#include "argon/ar_kernel.hpp"
+#include "argon/ar_mutex.hpp"
+#include "argon/ar_thread.hpp"
+#include "ar_common.hpp"
+#include "ar_assert.hpp"
+#include <cstring>
 
-using namespace Ar;
+namespace Ar {
 
-//------------------------------------------------------------------------------
-// Prototypes
-//------------------------------------------------------------------------------
+	//------------------------------------------------------------------------------
+	// Prototypes
+	//------------------------------------------------------------------------------
 
-static ar_status_t ar_mutex_get_internal(ar_mutex_t * mutex, uint32_t timeout);
-static void ar_mutex_deferred_get(void * object, void * object2);
-static ar_status_t ar_mutex_put_internal(ar_mutex_t * mutex);
-static void ar_mutex_deferred_put(void * object, void * object2);
+	//------------------------------------------------------------------------------
+	// Implementation
+	//------------------------------------------------------------------------------
 
-//------------------------------------------------------------------------------
-// Implementation
-//------------------------------------------------------------------------------
+	// See ar_kernel.h for documentation of this function.
+	Mutex::Mutex(const char *name) {
+		Ar::assert(!Port::get_irq_state());
 
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_mutex_create(ar_mutex_t * mutex, const char * name)
-{
-    if (!mutex)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
-
-    memset(mutex, 0, sizeof(ar_mutex_t));
-    mutex->m_name = name ? name : AR_ANONYMOUS_OBJECT_NAME;
-
-    // Set the blocked list to sort by priority.
-    mutex->m_blockedList.m_predicate = ar_thread_sort_by_priority;
+		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
+		;
 
 #if AR_GLOBAL_OBJECT_LISTS
-    mutex->m_createdNode.m_obj = mutex;
-    g_ar_objects.mutexes.add(&mutex->m_createdNode);
+		m_createdNode.m_obj = mutex;
+		g_ar_objects.mutexes.add(&m_createdNode);
 #endif // AR_GLOBAL_OBJECT_LISTS
+	}
 
-    return kArSuccess;
-}
-
-// See ar_kernel.h for documentation of this function.
-//! @todo Return error when deleting a mutex that is still locked.
-ar_status_t ar_mutex_delete(ar_mutex_t * mutex)
-{
-    if (!mutex)
-    {
-        return kArInvalidParameterError;
-    }
-    if (ar_port_get_irq_state())
-    {
-        return kArNotFromInterruptError;
-    }
+	// See ar_kernel.h for documentation of this function.
+	//! @todo Return error when deleting a mutex that is still locked.
+	Mutex::~Mutex() {
+		Ar::assert(!Port::get_irq_state());
 
 #if AR_GLOBAL_OBJECT_LISTS
-    g_ar_objects.mutexes.remove(&mutex->m_createdNode);
+		g_ar_objects.mutexes.remove(&mutex->m_createdNode);
 #endif // AR_GLOBAL_OBJECT_LISTS
+	}
 
-    return kArSuccess;
+	void Mutex::deferred_get(void *object, void *object2) {
+		if (!Ar::assert(object)) { return; };
+		reinterpret_cast<Mutex *>(object)->get(Duration::zero());
+	}
+
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Mutex::get(std::optional<Duration> timeout) {
+		Ar::assert(!Port::get_irq_state());
+
+		// Handle irq state by deferring the get.
+		if (Port::get_irq_state()) { return Kernel::postDeferredAction(Mutex::deferred_get, this); }
+
+		return get_internal();
+	}
+
+	Ar::Status Mutex::get_internal(std::optional<Duration> timeout) {
+		KernelLock guard;
+
+		// If this thread already owns the mutex, just increment the count.
+		if (Thread::getCurrent() == m_owner) {
+			m_ownerLockCount = m_ownerLockCount + 1;
+		}
+		// Otherwise attempt to get the mutex.
+		else {
+			// Will we block?
+			while (m_ownerLockCount != 0) {
+				// Return immediately if the timeout is 0.
+				if (timeout.has_value() && timeout.value()) { return Status::timeoutError; }
+
+				// Check if we need to hoist the owning thread's priority to our own.
+				Thread *self = Thread::getCurrent();
+				Ar::assert(m_owner);
+				if (self->m_priority > m_owner->m_priority) {
+					if (!m_originalPriority) { m_originalPriority = m_owner->m_priority; }
+					m_owner->m_priority = self->m_priority;
+				}
+
+				// Block this thread on the mutex.
+				self->block(m_blockedList, timeout);
+
+				// We're back from the scheduler. We'll loop and recheck the ownership counter, in case
+				// a higher priority thread grabbed the lock between when we were unblocked and when we
+				// actually started running.
+
+				// Check for errors and exit early if there was one.
+				if (self->m_unblockStatus != Ar::Status::success) {
+					//! @todo Need to handle timeout after hoisting the owner thread.
+					// Failed to gain the mutex, probably due to a timeout.
+					m_blockedList.remove(&self->m_blockedNode);
+					return self->m_unblockStatus;
+				}
+			}
+
+			// Take ownership of the lock.
+			assert(m_owner == nullptr && m_ownerLockCount == 0);
+			m_owner = Thread::getCurrent();
+			m_ownerLockCount = m_ownerLockCount + 1;
+		}
+
+		return Ar::Status::success;
+	}
+
+	void Mutex::deferred_put(void *object, void *object2) {
+		if (!Ar::assert(object)) { return; };
+		reinterpret_cast<Mutex *>(object)->put_internal();
+	}
+
+	// See ar_kernel.h for documentation of this function.
+	Ar::Status Mutex::put() {
+
+		// Handle irq state by deferring the put.
+		if (Port::get_irq_state()) { return Kernel::postDeferredAction(Mutex::deferred_put, this); }
+
+		return put_internal();
+	}
+
+	Ar::Status Mutex::put_internal() {
+		KernelLock guard;
+
+		// Nothing to do if the mutex is already unlocked.
+		if (m_ownerLockCount == 0) { return Status::alreadyUnlockedError; }
+
+		// Only the owning thread can unlock a mutex.
+		Thread *self = Thread::getCurrent();
+		if (self != m_owner) { return Status::notOwnerError; }
+
+		// We are the owner of the mutex, so decrement its recursive lock count.
+		m_ownerLockCount = m_ownerLockCount - 1;
+		if (m_ownerLockCount == 0) {
+			// The lock count has reached zero, so clear the owner.
+			m_owner = nullptr;
+
+			// Restore this thread's priority if it had been raised.
+			uint8_t original = m_originalPriority;
+			if (original) {
+				m_originalPriority = 0;
+				self->setPriority(original);
+			}
+
+			// Unblock a waiting thread.
+			if (m_blockedList.m_head) {
+				// Unblock the head of the blocked list.
+				Thread *thread = m_blockedList.getHead<Thread>();
+				thread->unblockWithStatus(m_blockedList, Ar::Status::success);
+			}
+		}
+
+		return Ar::Status::success;
+	}
 }
-
-static ar_status_t ar_mutex_get_internal(ar_mutex_t * mutex, uint32_t timeout)
-{
-    KernelLock guard;
-
-    // If this thread already owns the mutex, just increment the count.
-    if (g_ar.currentThread == mutex->m_owner)
-    {
-        ++mutex->m_ownerLockCount;
-    }
-    // Otherwise attempt to get the mutex.
-    else
-    {
-        // Will we block?
-        while (mutex->m_ownerLockCount != 0)
-        {
-            // Return immediately if the timeout is 0.
-            if (timeout == kArNoTimeout)
-            {
-                return kArTimeoutError;
-            }
-
-            // Check if we need to hoist the owning thread's priority to our own.
-            ar_thread_t * self = g_ar.currentThread;
-            assert(mutex->m_owner);
-            if (self->m_priority > mutex->m_owner->m_priority)
-            {
-                if (!mutex->m_originalPriority)
-                {
-                    mutex->m_originalPriority = mutex->m_owner->m_priority;
-                }
-                mutex->m_owner->m_priority = self->m_priority;
-            }
-
-            // Block this thread on the mutex.
-            self->block(mutex->m_blockedList, timeout);
-
-            // We're back from the scheduler. We'll loop and recheck the ownership counter, in case
-            // a higher priority thread grabbed the lock between when we were unblocked and when we
-            // actually started running.
-
-            // Check for errors and exit early if there was one.
-            if (self->m_unblockStatus != kArSuccess)
-            {
-                //! @todo Need to handle timeout after hoisting the owner thread.
-                // Failed to gain the mutex, probably due to a timeout.
-                mutex->m_blockedList.remove(&self->m_blockedNode);
-                return self->m_unblockStatus;
-            }
-        }
-
-        // Take ownership of the lock.
-        assert(mutex->m_owner == NULL && mutex->m_ownerLockCount == 0);
-        mutex->m_owner = g_ar.currentThread;
-        ++mutex->m_ownerLockCount;
-    }
-
-    return kArSuccess;
-}
-
-static void ar_mutex_deferred_get(void * object, void * object2)
-{
-    ar_mutex_get_internal(reinterpret_cast<ar_mutex_t *>(object), kArNoTimeout);
-}
-
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_mutex_get(ar_mutex_t * mutex, uint32_t timeout)
-{
-    if (!mutex)
-    {
-        return kArInvalidParameterError;
-    }
-
-    // Handle irq state by deferring the get.
-    if (ar_port_get_irq_state())
-    {
-        return g_ar.deferredActions.post(ar_mutex_deferred_get, mutex);
-    }
-
-    return ar_mutex_get_internal(mutex, timeout);
-}
-
-static ar_status_t ar_mutex_put_internal(ar_mutex_t * mutex)
-{
-    KernelLock guard;
-
-    // Nothing to do if the mutex is already unlocked.
-    if (mutex->m_ownerLockCount == 0)
-    {
-        return kArAlreadyUnlockedError;
-    }
-
-    // Only the owning thread can unlock a mutex.
-    ar_thread_t * self = g_ar.currentThread;
-    if (self != mutex->m_owner)
-    {
-        return kArNotOwnerError;
-    }
-
-    // We are the owner of the mutex, so decrement its recursive lock count.
-    if (--mutex->m_ownerLockCount == 0)
-    {
-        // The lock count has reached zero, so clear the owner.
-        mutex->m_owner = NULL;
-
-        // Restore this thread's priority if it had been raised.
-        uint8_t original = mutex->m_originalPriority;
-        if (original)
-        {
-            mutex->m_originalPriority = 0;
-            ar_thread_set_priority(self, original);
-        }
-
-        // Unblock a waiting thread.
-        if (mutex->m_blockedList.m_head)
-        {
-            // Unblock the head of the blocked list.
-            ar_thread_t * thread = mutex->m_blockedList.getHead<ar_thread_t>();
-            thread->unblockWithStatus(mutex->m_blockedList, kArSuccess);
-        }
-    }
-
-    return kArSuccess;
-}
-
-static void ar_mutex_deferred_put(void * object, void * object2)
-{
-    ar_mutex_put_internal(reinterpret_cast<ar_mutex_t *>(object));
-}
-
-// See ar_kernel.h for documentation of this function.
-ar_status_t ar_mutex_put(ar_mutex_t * mutex)
-{
-    if (!mutex)
-    {
-        return kArInvalidParameterError;
-    }
-
-    // Handle irq state by deferring the put.
-    if (ar_port_get_irq_state())
-    {
-        return g_ar.deferredActions.post(ar_mutex_deferred_put, mutex);
-    }
-
-    return ar_mutex_put_internal(mutex);
-}
-
-// See ar_kernel.h for documentation of this function.
-bool ar_mutex_is_locked(ar_mutex_t * mutex)
-{
-    return mutex ? mutex->m_ownerLockCount != 0 : false;
-}
-
-// See ar_kernel.h for documentation of this function.
-ar_thread_t * ar_mutex_get_owner(ar_mutex_t * mutex)
-{
-    return mutex ? (ar_thread_t *)mutex->m_owner : NULL;
-}
-
-// See ar_kernel.h for documentation of this function.
-const char * ar_mutex_get_name(ar_mutex_t * mutex)
-{
-    return mutex ? mutex->m_name : NULL;
-}
-
-//------------------------------------------------------------------------------
-// EOF
-//------------------------------------------------------------------------------

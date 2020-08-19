@@ -23,7 +23,7 @@ Here's an example subclass that uses a member function as the entry point:
  class MySubclassThread : public Ar::Thread
  {
  public:
-     ar_status_t init()
+     Ar::Status init()
      {
          // Pass NULL for the entry point. It's not needed because you are
          // overriding threadEntry() below.
