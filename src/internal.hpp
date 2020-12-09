@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2016 Immo Software
+ * Copyright (c) 2013-2018 Immo Software
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -27,18 +27,58 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 /*!
- * @file
- * @brief Main header for the Argon RTOS.
- * @ingroup ar
+ * @file ar_internal.h
+ * @ingroup ar_port
+ * @brief Header for the Argon RTOS.
  */
 
-#if !defined(_ARGON_H_)
-#define _ARGON_H_
+#if !defined(_AR_INTERNAL_H_)
+	#define _AR_INTERNAL_H_
 
-#include "argon/kernel.hpp"
-#include "argon/classes.hpp"
+	#include "argon/list.hpp"
+	#include "argon/argon.hpp"
+	#include "argon/port.hpp"
+	#include "argon/config.hpp"
 
-#endif // _ARGON_H_
+	#include <cstdint>
+
 //------------------------------------------------------------------------------
-// EOF
+// Definitions
 //------------------------------------------------------------------------------
+
+	#if !defined(WEAK)
+		#define WEAK __attribute__((weak))
+	#endif
+
+	#if !defined(ALWAYS_INLINE)
+		#define ALWAYS_INLINE __attribute__((always_inline))
+	#endif
+
+namespace Ar {
+
+	//------------------------------------------------------------------------------
+	// API
+	//------------------------------------------------------------------------------
+
+
+	//! @name Interrupt handlers
+	//@{
+	extern "C" void		ar_kernel_periodic_timer_isr(void);
+	extern "C" uint32_t ar_kernel_yield_isr(uint32_t topOfStack);
+	//@}
+
+
+	// Inline list method implementation.
+	// inline bool _ar_list::isEmpty() const { return m_head == NULL; }
+	// inline void _ar_list::add(Thread *item) { add(&item->m_threadNode); }
+	// inline void _ar_list::add(ar_timer_t *item) { add(&item->m_activeNode); }
+	// inline void _ar_list::add(ar_queue_t *item) { add(&item->m_runLoopNode); }
+	// inline void _ar_list::remove(Thread *item) { remove(&item->m_threadNode); }
+	// inline void _ar_list::remove(ar_timer_t *item) { remove(&item->m_activeNode); }
+	// inline void _ar_list::remove(ar_queue_t *item) { remove(&item->m_runLoopNode); }
+
+
+#endif // _AR_INTERNAL_H_
+	//------------------------------------------------------------------------------
+	// EOF
+	//------------------------------------------------------------------------------

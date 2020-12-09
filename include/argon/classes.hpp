@@ -28,17 +28,20 @@
  */
 /*!
  * @file
- * @brief Main header for the Argon RTOS.
+ * @brief Header for the Argon RTOS wrapper classes.
  * @ingroup ar
  */
 
-#if !defined(_ARGON_H_)
-#define _ARGON_H_
+#if !defined(_AR_CLASSES_H_)
+	#define _AR_CLASSES_H_
 
-#include "argon/kernel.hpp"
-#include "argon/classes.hpp"
+	#include "argon/kernel.hpp"
+	#include "argon/thread.hpp"
+	#include "argon/queue.hpp"
+	#include "argon/semaphore.hpp"
+	#include "argon/mutex.hpp"
+	#include "argon/channel.hpp"
+	#include "argon/timer.hpp"
+	#include "argon/runloop.hpp"
 
-#endif // _ARGON_H_
-//------------------------------------------------------------------------------
-// EOF
-//------------------------------------------------------------------------------
+#endif // _AR_CLASSES_H_
