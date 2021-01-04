@@ -61,11 +61,11 @@ namespace Ar {
 	//------------------------------------------------------------------------------
 
 	// Forward declarations.
-	struct Thread;
-	struct Channel;
-	struct Queue;
-	struct Timer;
-	struct Runloop;
+	class Thread;
+	class Channel;
+	class Queue;
+	class Timer;
+	class Runloop;
 
 	//! @brief Callback routine for timer expiration.
 	//!
@@ -136,7 +136,7 @@ namespace Ar {
 		DeferredActionQueue m_deferredActions {}; //!< Actions deferred from interrupt context.
 		std::atomic<unsigned int> m_lockCount {}; //!< Whether the kernel is locked.
 		std::optional<Time> m_nextWakeup {}; //!< Time of the next wakeup event.
-		unsigned int m_threadIdCounter ; //!< Counter for generating unique thread IDs.
+		unsigned int m_threadIdCounter {}; //!< Counter for generating unique thread IDs.
 
 		class SystemLoadDisabled {
 			constexpr void reset() {}
@@ -175,12 +175,8 @@ namespace Ar {
 
 		[[no_unique_address]] SystemLoad systemLoad {};
 
-		Thread m_idleThread; //!< The lowest priority thread in the system. Executes only when no other threads are ready.
-
 	  public:
-		Kernel() :
-			m_idleThread("IDLE", idle_entry, nullptr, s_idleThreadStack.data(), std::size(s_idleThreadStack), Thread::idleThreadPriority,
-				Thread::InitialState::suspended) {}
+		Kernel() {}
 
 		Kernel(const Kernel &) = delete;
 		Kernel(const Kernel &&) = delete;
@@ -217,8 +213,8 @@ namespace Ar {
 		List &sleepingList_internal() { return m_sleepingList; }
 		static inline List &sleepingList();
 
-		Thread *idleThread_internal() { return &m_idleThread; }
-		static inline Thread *idleThread();
+		// Thread *idleThread_internal() { return &_idleThread; }
+		static inline Thread &idleThread();
 
 		std::uint16_t get_system_load_internal(bool reset);
 		static inline std::uint16_t get_system_load(bool reset);
@@ -275,32 +271,38 @@ namespace Ar {
 
 	extern AllObjects allObjects;
 
-	extern Kernel g_ar;
+	// inline 
+
+	Kernel &kernel();
+
+	inline ThreadWithStack<config::IDLE_THREAD_STACK_SIZE> _idleThread("IDLE", Kernel::idle_entry, nullptr, Thread::minThreadPriority,
+		Thread::InitialState::suspended); //!< The lowest priority thread in the system. Executes only when no other threads are ready. Real priority value is adjusted at kernel start
 
 	// static wrappers for kernel
 	inline Status Kernel::postDeferredAction(Kernel::DeferredActionQueue::DeferredAction action, void *object) {
-		return g_ar.m_deferredActions.post(action, object);
+		return kernel().m_deferredActions.post(action, object);
 	}
 	inline Status Kernel::postDeferredAction(Kernel::DeferredActionQueue::DeferredAction action, void *object, void *object2) {
-		return g_ar.m_deferredActions.post(action, object, object2);
+		return kernel().m_deferredActions.post(action, object, object2);
 	}
-	inline std::uint32_t Kernel::yieldIsr(std::uint32_t topOfStack) { return g_ar.yieldIsr_internal(topOfStack); }
-	inline void Kernel::timerIsr() { g_ar.timerIsr_internal(); }
-	inline void Kernel::update_round_robin() { g_ar.update_round_robin_internal(); }
-	inline List &Kernel::readyList() { return g_ar.readyList_internal(); }
-	inline List &Kernel::suspendedList() { return g_ar.suspendedList_internal(); }
-	inline List &Kernel::sleepingList() { return g_ar.sleepingList_internal(); }
-	inline Thread *Kernel::idleThread() { return g_ar.idleThread_internal(); }
-	inline void Kernel::enter_scheduler() { g_ar.enter_scheduler_internal(); }
-	inline decltype(Kernel::m_lockCount) &Kernel::lockCount() { return g_ar.m_lockCount; }
-	inline decltype(Kernel::m_flags) &Kernel::flags() { return g_ar.m_flags; }
-	inline unsigned int Kernel::getNewThreadId() { return g_ar.getNewThreadId_internal(); }
-	inline bool Kernel::is_running(void) { return g_ar.m_flags.isRunning; }
-	inline void Kernel::run() { g_ar.run_internal(); }
-	inline Thread *Kernel::getCurrent() { return g_ar.m_currentThread; }
-	inline std::uint16_t Kernel::get_system_load(bool reset) { return g_ar.get_system_load_internal(reset); }
-	inline std::uint16_t Kernel::get_thread_load(Thread *thread) { return g_ar.get_thread_load_internal(thread); }
-	inline void Kernel::reset_system_load() { g_ar.reset_system_load_internal(); }
+	inline std::uint32_t Kernel::yieldIsr(std::uint32_t topOfStack) { return kernel().yieldIsr_internal(topOfStack); }
+	inline void Kernel::timerIsr() { kernel().timerIsr_internal(); }
+	inline void Kernel::update_round_robin() { kernel().update_round_robin_internal(); }
+	inline List &Kernel::readyList() { return kernel().readyList_internal(); }
+	inline List &Kernel::suspendedList() { return kernel().suspendedList_internal(); }
+	inline List &Kernel::sleepingList() { return kernel().sleepingList_internal(); }
+	// inline Thread *Kernel::idleThread() { return kernel().idleThread_internal(); }
+	inline Thread &Kernel::idleThread() { return _idleThread; }
+	inline void Kernel::enter_scheduler() { kernel().enter_scheduler_internal(); }
+	inline decltype(Kernel::m_lockCount) &Kernel::lockCount() { return kernel().m_lockCount; }
+	inline decltype(Kernel::m_flags) &Kernel::flags() { return kernel().m_flags; }
+	inline unsigned int Kernel::getNewThreadId() { return kernel().getNewThreadId_internal(); }
+	inline bool Kernel::is_running(void) { return kernel().m_flags.isRunning; }
+	inline void Kernel::run() { kernel().run_internal(); }
+	inline Thread *Kernel::getCurrent() { return kernel().m_currentThread; }
+	inline std::uint16_t Kernel::get_system_load(bool reset) { return kernel().get_system_load_internal(reset); }
+	inline std::uint16_t Kernel::get_thread_load(Thread *thread) { return kernel().get_thread_load_internal(thread); }
+	inline void Kernel::reset_system_load() { kernel().reset_system_load_internal(); }
 
 	/*!
 	 * @brief Utility class to temporarily lock or unlock the kernel.

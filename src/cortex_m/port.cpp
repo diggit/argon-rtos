@@ -4,7 +4,7 @@
 #include "argon/kernel.hpp"
 #include "trace.hpp"
 
-extern "C" void _exit(int) { Ar::Port::halt(); }
+extern "C" void _exit(int) { Ar::Port::halt(); for(;;); }
 
 namespace Ar::Port {
 
@@ -13,7 +13,7 @@ namespace Ar::Port {
 	//------------------------------------------------------------------------------
 
 	//! @brief Global used solely to pass info back to asm PendSV handler code.
-	extern "C" bool g_ar_hasExtendedFrame = false;
+	extern "C" { bool g_ar_hasExtendedFrame = false; }
 
 	//! A total of 64 bytes of stack space is required to hold the initial
 	//! thread context.
@@ -79,12 +79,12 @@ namespace Ar::Port {
 			assert(thread->m_state != Thread::ThreadState::running);
 			assert(thread != Kernel::getCurrent());
 
-			auto start = reinterpret_cast<volatile std::uint8_t *>(thread->m_stackBottom +1);
+			const auto bottom = reinterpret_cast<volatile std::uint8_t *>(thread->m_stackBottom +1);
 			// + 1; to preserve stackCheckValue
-			auto end = reinterpret_cast<volatile std::uint8_t *>(thread->m_stackPointer - 1);
+			const auto sp = reinterpret_cast<volatile std::uint8_t *>(thread->m_stackPointer - 1);
 			// thread->m_stackPointer - 1 to avoid touching stack pointer
-			assert(start <= end);
-			std::memset(const_cast<std::uint8_t*>(start), stackFillValue & 0xff, end-start);
+			assert(sp >= bottom); // stack overflow!
+			std::memset(const_cast<std::uint8_t*>(bottom), stackFillValue & 0xff, sp-bottom);
 			// Fill the stack with a pattern. We just take the low byte of the fill pattern since
 			// memset() is a byte fill. This assumes each byte of the fill pattern is the same.
 		}
@@ -97,7 +97,7 @@ namespace Ar::Port {
 		if (thread) { thread->m_portData.setExtendedFrame(isExtendedFrame); }
 
 		// Run the scheduler.
-		std::uint32_t stack = Kernel::yieldIsr(topOfStack);
+		const std::uint32_t stack = Kernel::yieldIsr(topOfStack);
 
 		// Pass whether there is an extended frame back to the asm code.
 		g_ar_hasExtendedFrame = Kernel::getCurrent()->m_portData.hasExtendedFrame();

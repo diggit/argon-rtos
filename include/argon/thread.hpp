@@ -116,7 +116,7 @@ namespace Ar {
 		[[no_unique_address]] SystemLoad systemLoad {};
 
 		std::uint32_t *m_stackTop {nullptr}; //!< Saved stack top address for computing stack usage.
-		std::uint32_t m_uniqueId; //!< Unique ID for this thread.
+		std::uint32_t m_uniqueId {}; //!< Unique ID for this thread. 
 
 		// Internal utility methods.
 		void block(List &blockedList, std::optional<Duration> timeout);
@@ -132,8 +132,8 @@ namespace Ar {
 		 */
 		struct ThreadStatus {
 			Thread *m_thread; //!< Pointer to the thread's structure.
-			Name m_name; //!< Thread's name.
-			std::uint32_t m_uniqueId; //!< Unique ID for this thread.
+			Name m_name {}; //!< Thread's name.
+			std::uint32_t m_uniqueId {}; //!< Unique ID for this thread.
 			std::uint32_t m_cpu; //!< Per mille CPU usage of the thread over the last sampling period, with a range of 1-1000.
 			ThreadState m_state; //!< Current thread state.
 			std::size_t m_maxStackUsed; //!< Maximum number of bytes used in the thread's stack.
@@ -352,7 +352,7 @@ namespace Ar {
 		//!     of 0 is ignored. If the sleep time is shorter than the scheduler quanta, then the thread
 		//!     will not actually sleep. If #kArInfiniteTimeout is passed for the sleep time, the thread
 		//!     will simply be suspended.
-		static void sleep(std::optional<Duration> duration);
+		static void sleep(std::optional<Duration> duration = std::nullopt);
 
 		//! @brief Put the current thread to sleep until a specific time.
 		//!
@@ -403,11 +403,19 @@ namespace Ar {
 
 		//! @retval true The @a a thread has a higher priority than @a b.
 		//! @retval false The @a a thread has a lower or equal priority than @a b.
-		static bool sort_by_priority(List::Node *a, List::Node *b);
+		static bool sort_by_priority(List::Node *a, List::Node *b) {
+			Thread *aThread = a->getObject<Thread>();
+			Thread *bThread = b->getObject<Thread>();
+			return (aThread->m_priority > bThread->m_priority);
+		}
 
 		//! @retval true The @a a thread has an earlier wakeup time than @a b.
 		//! @retval false The @a a thread has a later or equal wakeup time than @a b.
-		static bool sort_by_wakeup(List::Node *a, List::Node *b);
+		static bool sort_by_wakeup(List::Node *a, List::Node *b) {
+			Thread *aThread = a->getObject<Thread>();
+			Thread *bThread = b->getObject<Thread>();
+			return (aThread->m_wakeupTime < bThread->m_wakeupTime);
+		}
 
 		//! @name Thread entry point wrapper
 		//@{

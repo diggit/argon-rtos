@@ -17,13 +17,29 @@ namespace Ar {
 	 */
 	class Queue {
 		friend Runloop;
-		Name m_name; //!< Name of the queue.
+
+		// its kind of workaround for absence of DCAS
+		struct Position {
+			using value_type = std::uint16_t;
+
+			value_type reader;
+			value_type writer;
+
+			constexpr Position() = default;
+
+			constexpr void readerPropagate() { writer = reader; }
+
+			constexpr void writerPropagate() { reader = writer; }
+		};
+
+		static_assert(sizeof(Position) == sizeof(std::uintptr_t)); // total sizeof(Position) must be <= than maximal architecture atomic CAS
+
+		Name m_name {}; //!< Name of the queue.
 		std::uint8_t *const m_elements; //!< Pointer to element storage.
 		const std::size_t m_elementSize; //!< Number of bytes occupied by each element.
 		const std::size_t m_capacity; //!< Maximum number of elements the queue can hold.
-		std::atomic<std::size_t> m_head {0}; //!< Index of queue head.
-		std::atomic<std::size_t> m_tail {0}; //!< Index of queue tail.
-		std::atomic<std::size_t> m_count {0}; //!< Current number of elements in the queue.
+		std::atomic<Position> m_writePos {}; //!< Position information with write insidec (heads)
+		std::atomic<Position> m_readPos {}; //!< Position information with read insidec (tails)
 		List m_sendBlockedList {}; //!< List of threads blocked waiting to send.
 		List m_receiveBlockedList {}; //!< List of threads blocked waiting to receive data.
 		Runloop *m_runLoop {nullptr}; //!< Runloop the queue is bound to.
@@ -67,6 +83,8 @@ namespace Ar {
 		//! @retval #kArQueueFullError
 		Status send(const void *element, std::optional<Duration> timeout = std::nullopt);
 
+		Status send_isr(const void *element);
+
 		//! @brief Remove an item from the queue.
 		//!
 		//! @param[out] element
@@ -79,11 +97,20 @@ namespace Ar {
 		//! @retval #kArQueueEmptyError
 		Status receive(void *element, std::optional<Duration> timeout = std::nullopt);
 
+		Status receive_isr(void *element);
+
 		//! @brief Returns whether the queue is currently empty.
-		bool isEmpty() const { return m_count == 0; }
+
+		// bool isEmpty() const { return reader == 0; }
+
+		// std::size_t availableItems() {}
 
 		//! @brief Returns the current number of elements in the queue.
-		std::size_t getCount() const { return m_count; }
+		// std::size_t getCount() const { return m_count; }
+
+		std::size_t getElementSize() const { return m_elementSize; }
+
+		void flush();
 
 	  private:
 		//! @brief Disable copy constructor.
@@ -92,7 +119,11 @@ namespace Ar {
 		//! @brief Disable assignment operator.
 		Queue &operator=(const Queue &other);
 
-		Status send_internal(const void *element, std::optional<Duration> timeout = std::nullopt);
+		static void deferred_send_internal_isr_finalize(void *queue, void *unused);
+		void send_internal_finalize();
+
+		static void deferred_receive_internal_isr_finalize(void *queue, void *unused);
+		void receive_internal_finalize();
 
 		constexpr auto QUEUE_ELEMENT(std::size_t index) { return &m_elements[m_elementSize * index]; }
 
@@ -141,7 +172,7 @@ namespace Ar {
 		StaticQueue(const char *name, T *storage, std::size_t capacity) = delete;
 
 		//! @brief Constructor.
-		StaticQueue(const char *name) : super(name, m_storage, sizeof(T), N) {}
+		StaticQueue(const char *name) : super(name, m_storage.data(), sizeof(T), N) {}
 
 		//! @brief Alternate form of typed receive.
 		//!
@@ -154,6 +185,8 @@ namespace Ar {
 			if (resultStatus) { *resultStatus = status; }
 			return element;
 		}
+
+		Status receive(T &element, std::optional<Duration> timeout = std::nullopt) { return Queue::receive(reinterpret_cast<void *>(&element), timeout); }
 
 	  protected:
 		std::array<T, N> m_storage; //!< Static storage for the queue elements.

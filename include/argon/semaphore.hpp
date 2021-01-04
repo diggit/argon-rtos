@@ -5,6 +5,7 @@
 	#include "argon/common.hpp"
 	#include "argon/units.hpp"
 	#include <optional>
+	#include <atomic>
 
 namespace Ar {
 
@@ -16,14 +17,17 @@ namespace Ar {
 	 * @see Semaphore::Guard
 	 */
 	class Semaphore {
-		Name m_name {}; //!< Name of the semaphore.
-		volatile unsigned int m_count; //!< Current semaphore count. Value of 0 means the semaphore is owned.
+		Name m_name {"anon"}; //!< Name of the semaphore.
+		std::atomic<unsigned int> m_count {}; //!< Current semaphore count. Value of 0 means the semaphore is owned.
 		List m_blockedList {}; //!< List of threads blocked on the semaphore.
 	#if AR_GLOBAL_OBJECT_LISTS
 		List::Node m_createdNode; //!< Created list node.
 	#endif // AR_GLOBAL_OBJECT_LISTS
 
 	  public:
+	  //! @brief Default constructor.
+		constexpr Semaphore() {};
+
 		//! @brief Constructor.
 		//!
 		//! @param name Pass a name for the semaphore. If NULL is passed the name will be set to an
@@ -32,7 +36,7 @@ namespace Ar {
 		//!     to get() to block until put() is called. A value of 1 or greater will allow that many
 		//!     calls to get() to succeed.
 		//!
-		Semaphore(const char *name = nullptr, unsigned int count = 0);
+		Semaphore(const char *name, const unsigned int count = 0);
 
 		//! @brief Destructor.
 		//!

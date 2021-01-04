@@ -49,7 +49,7 @@ namespace Ar {
 	// See ar_kernel.h for documentation of this function.
 	Timer::Timer(const char *name, Timer::Entry callback, void *param, Timer::Mode timerMode, Duration delay) :
 		m_activeNode(this), m_callback(timer_wrapper), m_param(param), m_mode(timerMode), m_delay(delay), m_wakeupTime(Time::now()), m_userCallback(callback) {
-		assert(callback && delay);
+		assert(callback && !delay.isZero());
 		assert(!Ar::Port::get_irq_state());
 
 		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
@@ -150,7 +150,7 @@ namespace Ar {
 
 	// See ar_kernel.h for documentation of this function.
 	Ar::Status Timer::setDelay(Duration delay) {
-		if (!delay) { return Ar::Status::invalidParameterError; }
+		if (delay.isZero()) { return Ar::Status::invalidParameterError; }
 
 		m_delay = delay;
 

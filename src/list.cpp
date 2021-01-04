@@ -1,5 +1,7 @@
 #include "argon/list.hpp"
 #include "argon/assert.hpp"
+#include "argon/config.hpp"
+#include "argon/port.hpp"
 
 namespace Ar {
 	//! Updates the list node's links and those of @a node so that the object is inserted before
@@ -79,9 +81,9 @@ namespace Ar {
 			} while (node != m_head);
 		}
 
-#if AR_ENABLE_LIST_CHECKS
-		check();
-#endif // AR_ENABLE_LIST_CHECKS
+		if constexpr (Ar::config::ENABLE_LIST_CHECKS) {
+			check();
+		}
 	}
 
 	//! If the specified item is not on the list, nothing happens. Items are compared only by pointer
@@ -93,9 +95,9 @@ namespace Ar {
 		assert(m_head != nullptr);
 		assert(item->m_next);
 		assert(item->m_prev);
-#if AR_ENABLE_LIST_CHECKS
-		assert(contains(item));
-#endif // AR_ENABLE_LIST_CHECKS
+		if constexpr (Ar::config::ENABLE_LIST_CHECKS) {
+			assert(contains(item));
+		}
 
 		// Adjust other nodes' links.
 		item->m_prev->m_next = item->m_next;
@@ -117,12 +119,11 @@ namespace Ar {
 		item->m_next = nullptr;
 		item->m_prev = nullptr;
 
-#if AR_ENABLE_LIST_CHECKS
-		check();
-#endif // AR_ENABLE_LIST_CHECKS
+		if constexpr (Ar::config::ENABLE_LIST_CHECKS) {
+			check();
+		}
 	}
 
-#if AR_ENABLE_LIST_CHECKS
 	void List::check() {
 		const uint32_t kNumNodes = 20;
 		List::Node *nodes[kNumNodes] = {0};
@@ -141,7 +142,7 @@ namespace Ar {
 			++count;
 			if (count == kNumNodes - 1) {
 				// More nodes than we have room for!
-				_halt();
+				Ar::Port::halt();
 			}
 
 			node = node->m_next;
@@ -162,9 +163,8 @@ namespace Ar {
 			uint32_t next = (i == count - 1) ? 0 : (i + 1);
 
 			node = nodes[i];
-			if (node->m_next != nodes[next]) { _halt(); }
-			if (node->m_prev != nodes[prev]) { _halt(); }
+			if (node->m_next != nodes[next]) { Ar::Port::halt(); }
+			if (node->m_prev != nodes[prev]) { Ar::Port::halt(); }
 		}
 	}
-#endif // AR_ENABLE_LIST_CHECKS
 }

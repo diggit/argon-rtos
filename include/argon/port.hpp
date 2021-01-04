@@ -38,13 +38,14 @@
 	#include "device.hpp"
 	#include "argon/units.hpp"
 	#include "argon/config.hpp"
+	#include "argon/assert.hpp"
 	#include <cstdint>
 	#include <type_traits>
 	#include <optional>
 
 namespace Ar {
 
-	struct Thread;
+	class Thread;
 
 	namespace Port {
 
@@ -100,13 +101,13 @@ namespace Ar {
 		 */
 		struct ThreadDataNonFPU {
 			constexpr bool hasExtendedFrame() const { return false; }
-			constexpr void setExtendedFrame(bool value) {};
+			constexpr void setExtendedFrame(const bool value) {};
 		};
 
 		struct ThreadDataFPU {
 			bool m_hasExtendedFrame; //!< Whether the thread context has an extended stack frame with saved FP registers.
 			bool hasExtendedFrame() const { return m_hasExtendedFrame; }
-			void setExtendedFrame(bool value) { m_hasExtendedFrame = value; }
+			void setExtendedFrame(const bool value) { m_hasExtendedFrame = value; }
 		};
 
 		struct ThreadData : public std::conditional_t<__FPU_USED, ThreadDataFPU, ThreadDataNonFPU> {
@@ -148,7 +149,7 @@ namespace Ar {
 		};
 
 		//! @brief Stop the CPU because of a serious error.
-		inline static void halt() { __BKPT(0); }
+		inline static void halt() { __BKPT(0); assert(false); for(;;); }
 
 		//! @}
 	} // namespace Port

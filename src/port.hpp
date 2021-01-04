@@ -44,7 +44,7 @@
 
 namespace Ar {
 
-	struct Thread;
+	class Thread;
 
 	namespace Port {
 

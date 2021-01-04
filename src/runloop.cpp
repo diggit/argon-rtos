@@ -47,7 +47,7 @@ namespace Ar {
 	//------------------------------------------------------------------------------
 
 	// See ar_kernel.h for documentation of this function.
-	Runloop::Runloop(const char *name) : m_timers(Timer::sort_by_wakeup) {
+	Runloop::Runloop(const char *name) {
 
 		assert(Ar::Port::get_irq_state());
 
@@ -122,20 +122,21 @@ namespace Ar {
 			if (!m_queues.isEmpty()) {
 				auto *queue = m_queues.getHead<Queue>();
 				assert(queue);
-				if (queue->m_count < 2) { m_queues.remove(&queue->m_runLoopNode); }
+				assert(false); //TODO. properly implement
+				// if (queue->m_count < 2) { m_queues.remove(&queue->m_runLoopNode); }
 
-				if (queue->m_count > 0) {
-					if (queue->m_runLoopHandler) {
-						// Call out to run loop queue source handler.
-						queue->m_runLoopHandler(queue, queue->m_runLoopHandlerParam);
-					} else {
-						// No handler associated with this queue, so exit the run loop.
-						if (object) { object->m_queue = queue; }
+				// if (queue->m_count > 0) {
+				// 	if (queue->m_runLoopHandler) {
+				// 		// Call out to run loop queue source handler.
+				// 		queue->m_runLoopHandler(queue, queue->m_runLoopHandlerParam);
+				// 	} else {
+				// 		// No handler associated with this queue, so exit the run loop.
+				// 		if (object) { object->m_queue = queue; }
 
-						returnStatus = Status::runLoopQueueReceived;
-						break;
-					}
-				}
+				// 		returnStatus = Status::runLoopQueueReceived;
+				// 		break;
+				// 	}
+				// }
 			}
 
 			// Check timeout. Adjust the timeout based on how long we've run so far.
@@ -207,12 +208,12 @@ namespace Ar {
 		do {
 			count = m_functionCount;
 			if (count + 1 > config::RUNLOOP_FUNCTION_QUEUE_SIZE) { return Status::queueFullError; }
-		}while(m_functionCount.compare_exchange_weak(count, count + 1));
+		}while(!m_functionCount.compare_exchange_weak(count, count + 1));
 
 		auto last = m_functionTail.load();
 		do {
 			last = m_functionTail;
-		}while(m_functionTail.compare_exchange_weak(last, (last + 1) % config::DEFERRED_ACTION_QUEUE_SIZE));
+		}while(!m_functionTail.compare_exchange_weak(last, (last + 1) % config::DEFERRED_ACTION_QUEUE_SIZE));
 
 		auto tail = last;
 

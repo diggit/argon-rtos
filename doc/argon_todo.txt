@@ -45,7 +45,7 @@ x Use nullptr instead of NULL (provide compatibility macro for pre-C++11).
 - Reduce kernel object sizes as much as possible.
 - Make ar_kernel_run() set the current thread to the idle thread so the scheduler doesn't need a special case the first time it is executed.
 - Improve thread init and port APIs so the Thread class doesn't require an extra entry point wrapper.
-x Add port kernel data struct so the extended frame flag can be included in g_ar. (Really useful?)
+x Add port kernel data struct so the extended frame flag can be included in kernel(). (Really useful?)
 - Separate tick timer routine sources so they can easily be replaced by the user (or make weak).
 - Do we even need the suspended thread list? (used for cpu usage and thread reports)
 - Deal with wrapping of tick counter.
@@ -78,13 +78,13 @@ x Change function pointer types to not be pointers, then make params etc pointer
 √ Make kernel object class destructors non-virtual, except for Thread; no virtual methods, and this will save a vptr&table for each class.
 √ Remove "2" on ar_post_deferred_action2() and use overloading.
 - Run kernel in privileged mode and use SVCall for most kernel APIs?
-√ KernelLock doesn't need a member to store saved state because g_ar.lockCount can be used.
+√ KernelLock doesn't need a member to store saved state because kernel().lockCount can be used.
 √ Have scheduler compute thread CPU usage.
 - Remove need for idle thread by staying in scheduler until a thread becomes ready.
 - Add optional support for blocks.
 - Abstracted MPU support.
 - Replace tick counter with 64-bit microsecond time.
-√ Move g_ar.allObjects to its own global variable.
+√ Move kernel().allObjects to its own global variable.
 √ Add a sleep until API.
 x Share a common timeout list for timers and blocked threads?
 - Main thread needs to be able to stop by returning from main()

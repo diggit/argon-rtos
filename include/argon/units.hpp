@@ -19,8 +19,21 @@ namespace Ar::units {
 	// using try_make_unsigned = std::conditional_t<std::is_integral_v<T>, std::make_unsigned_t<std::conditional_t<std::is_integral_v<T>, T, int>>, T>; // ugly
 	// but works, improvements welcome!
 
+	namespace compat {
+#if __cplusplus <= 201703L
+		// pre C++20 workaround
+		template<class T>
+		struct type_identity {
+			using type = T;
+		};
+#else
+		using namespace std;
+#endif
+	} // namespace compat
+
+#if __cplusplus > 201703L
 	template<typename T>
-	using try_make_unsigned_alt = typename std::conditional<std::is_integral<T>::value, std::make_unsigned<T>, std::type_identity<T>>::type;
+	using try_make_unsigned_alt = typename std::conditional<std::is_integral<T>::value, std::make_unsigned<T>, compat::type_identity<T>>::type;
 
 	template<typename Tvalue>
 	constexpr typename try_make_unsigned_alt<Tvalue>::type tabs(Tvalue value) {
@@ -30,6 +43,8 @@ namespace Ar::units {
 		}
 		return value;
 	}
+
+#endif
 
 	using literalFloat = long double;
 	using literalInt = unsigned long long int;
@@ -86,42 +101,42 @@ namespace Ar::units {
 	struct CommonUnitOperators {
 		// relation operators
 
-		constexpr bool operator<(const Derived &r) const {
+		[[nodiscard]] constexpr bool operator<(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Comparison>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Comparison, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return me.value < r.value;
 		}
 
-		constexpr bool operator>(const Derived &r) const {
+		[[nodiscard]] constexpr bool operator>(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Comparison>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Comparison, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return me.value > r.value;
 		}
 
-		constexpr bool operator==(const Derived &r) const {
+		[[nodiscard]] constexpr bool operator==(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Comparison>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Comparison, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return me.value == r.value;
 		}
 
-		constexpr bool operator!=(const Derived &r) const {
+		[[nodiscard]] constexpr bool operator!=(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Comparison>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Comparison, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return me.value != r.value;
 		}
 
-		constexpr bool operator<=(const Derived &r) const {
+		[[nodiscard]] constexpr bool operator<=(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Comparison>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Comparison, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return me.value <= r.value;
 		}
 
-		constexpr bool operator>=(const Derived &r) const {
+		[[nodiscard]] constexpr bool operator>=(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Comparison>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Comparison, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
@@ -129,35 +144,35 @@ namespace Ar::units {
 		}
 
 		// ratio
-		constexpr float operator/(const Derived &r) const {
+		[[nodiscard]] constexpr float operator/(const Derived &r) const {
 			auto &me = static_cast<const Derived &>(*this);
 			return static_cast<float>(me.value) / r.value;
 		}
 
 		// arithmetic operators
 
-		constexpr Derived operator*(float r) const {
+		[[nodiscard]] constexpr Derived operator*(float r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Mul>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Mul, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return Derived(me.value * r);
 		}
 
-		constexpr Derived operator*(int r) const {
+		[[nodiscard]] constexpr Derived operator*(int r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Mul>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Mul, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return Derived(static_cast<float>(me.value) * static_cast<float>(r));
 		}
 
-		constexpr Derived operator/(float r) const {
+		[[nodiscard]] constexpr Derived operator/(float r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Div>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Div, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
 			return Derived(me.value / r);
 		}
 
-		constexpr Derived operator/(int r) const {
+		[[nodiscard]] constexpr Derived operator/(int r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Div>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Div, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
@@ -165,7 +180,7 @@ namespace Ar::units {
 		}
 
 		// arithmetic operators of same type
-		constexpr Derived operator+(const Derived &r) const {
+		[[nodiscard]] constexpr Derived operator+(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Add>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Add, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
@@ -180,7 +195,7 @@ namespace Ar::units {
 			return me;
 		};
 
-		constexpr Derived operator-(const Derived &r) const {
+		[[nodiscard]] constexpr Derived operator-(const Derived &r) const {
 			static_assert(list_contains_v<typename Derived::flags, OperatorTypes::Sub>,
 				"Your type must enable this operation (using flags = list_of<OperatorTypes::Sub, ...>;).");
 			auto &me = static_cast<const Derived &>(*this);
@@ -196,7 +211,7 @@ namespace Ar::units {
 			return me;
 		};
 
-		constexpr Derived operator-() const {
+		[[nodiscard]] constexpr Derived operator-() const {
 			auto &me = static_cast<const Derived &>(*this);
 			static_assert(std::is_signed_v<decltype(me.value)>, "BaseType type must be signed to apply unary minus operator.");
 			return {Derived(static_cast<decltype(me.value)>(-me.value))};
@@ -245,8 +260,8 @@ namespace Ar::units {
 		}
 
 	  public:
-		template<typename sourceResolution = std::ratio<1, 1>, bool allowTruncationOveride = false>
-		[[nodiscard]] static constexpr Derived from(auto value_) {
+		template<typename sourceResolution = std::ratio<1, 1>, bool allowTruncationOveride = false, typename Tvalue>
+		[[nodiscard]] static constexpr Derived from(const Tvalue value_) {
 			return Derived(resolutionConversion<allowTruncationOveride, BaseResolution, BaseType, sourceResolution, decltype(value_)>(value_));
 		}
 
@@ -269,12 +284,13 @@ namespace Ar::units {
 
 		[[nodiscard]] constexpr typeAndRatio<BaseType, BaseResolution> asTypeAndRatio() const { return typeAndRatio<BaseType, BaseResolution>(value); }
 
+#if __cplusplus > 201703L
 		using UnsignedBaseType = typename try_make_unsigned_alt<BaseType>::type;
 		[[nodiscard]] constexpr typeAndRatio<UnsignedBaseType, BaseResolution> asTypeAndRatioAbs() const {
 			return typeAndRatio<UnsignedBaseType, BaseResolution>(tabs(value));
 		}
-
-		operator bool() const { return value; }
+#endif
+		//[[nodiscard]] constexpr operator bool() const { return value; }
 	};
 
 	// ===================== Unit definitions =====================
@@ -294,9 +310,9 @@ namespace Ar::units {
 
 		static constexpr Duration zero() { return Duration(0); }
 
-		auto chrono() const {
-			return std::chrono::duration<BaseType, BaseResolution>(value);
-		}
+		auto chrono() const { return std::chrono::duration<BaseType, BaseResolution>(value); }
+
+		constexpr bool isZero() const { return value == 0; }
 
 		struct AllowTruncation {};
 		static constexpr AllowTruncation allowTruncation {};
@@ -330,7 +346,7 @@ namespace Ar::units {
 
 		// // WARNING: returned Duration is alway positive (abs value of difference)!
 		[[nodiscard]] constexpr Duration operator-(const Time &r) const {
-			BaseType v;
+			BaseType v {};
 
 			if constexpr (std::is_signed_v<Duration::BaseType>) {
 				v = value - r.value;
@@ -344,21 +360,43 @@ namespace Ar::units {
 			return Duration::fromRaw(resolutionConversion<true, Duration::BaseResolution, Duration::BaseType, BaseResolution>(v));
 		}
 
-		[[nodiscard]] constexpr Time &operator-=(const Duration &r) {
+		constexpr Time &operator-=(const Duration &r) {
 			value -= resolutionConversion<true, BaseResolution, BaseType, Duration::BaseResolution>(r.getRaw());
 			return *this;
 		};
 
-		[[nodiscard]] constexpr Time &operator+=(const Duration &r) {
+		constexpr Time &operator+=(const Duration &r) {
 			value += resolutionConversion<true, BaseResolution, BaseType, Duration::BaseResolution>(r.getRaw());
 			return *this;
 		};
 
-		[[nodiscard]] bool elapsed(const Duration &duration) { return (now() - *this) > duration; }
+		[[nodiscard]] bool elapsed(const Duration &duration) const { return (now() - *this) > duration; }
 
 		[[nodiscard]] static Time now();
 
+		void reset() { value = now().getRaw(); }
+
 		[[nodiscard]] static constexpr Time zero() { return Time(0); } // normally never used, meant for disabled SystemLoad etc.
+
+		static void delay(Duration duration, const bool isMinimumWaitingTime = true) {
+			const auto start = Time::now();
+			if (isMinimumWaitingTime) {
+				// because in case of single time quanta delay, real delay may be between 0 and 1 full time quanta
+				// that depends when the call happens vs when tick occurs
+				// so we add 1 tq to be sure we block *at least* for requested time
+				duration.value++;
+			}
+			while (!start.elapsed(duration))
+				;
+		}
+	};
+
+	class Frequency : public CommonUnitBase<Frequency, std::uint32_t, std::ratio<1, 1>, true>, public CommonUnitOperators<Frequency> {
+		using flags = list_of<OperatorTypes::Comparison, OperatorTypes::Add, OperatorTypes::Sub, OperatorTypes::Mul, OperatorTypes::Div>;
+		using CommonUnitBase::CommonUnitBase; // ctor
+		friend CommonUnitOperators;
+
+		// TODO: add conversion to/from time?
 	};
 
 	class Voltage : public CommonUnitBase<Voltage, float, std::ratio<1, 1>, true>, public CommonUnitOperators<Voltage> {
@@ -379,11 +417,39 @@ namespace Ar::units {
 		friend CommonUnitOperators;
 	};
 
-} // namespace units
+	class Energy : public CommonUnitBase<Energy, float, std::ratio<1, 1>, true>, public CommonUnitOperators<Energy> {
+		using flags = list_of<OperatorTypes::Comparison, OperatorTypes::Add, OperatorTypes::Sub, OperatorTypes::Mul, OperatorTypes::Div>;
+		using CommonUnitBase::CommonUnitBase; // ctor
+		friend CommonUnitOperators;
+	};
+
+	class Resistance : public CommonUnitBase<Resistance, float, std::ratio<1, 1>, true>, public CommonUnitOperators<Resistance> {
+		using flags = list_of<OperatorTypes::Comparison, OperatorTypes::Add, OperatorTypes::Sub, OperatorTypes::Mul, OperatorTypes::Div>;
+		using CommonUnitBase::CommonUnitBase; // ctor
+		friend CommonUnitOperators;
+	};
+} // namespace Ar::units
 
 // ---------------------- User literals ---------------------------
 
-[[nodiscard]] constexpr Ar::units::Duration operator""_s(Ar::units::literalFloat x) { return Ar::units::Duration::from<std::ratio<1, 1>>(static_cast<float>(x)); }
+[[nodiscard]] constexpr Ar::units::Frequency operator""_Hz(Ar::units::literalFloat x) {
+	return Ar::units::Frequency::from<std::ratio<1, 1>>(static_cast<float>(x));
+}
+[[nodiscard]] constexpr Ar::units::Frequency operator""_Hz(Ar::units::literalInt x) {
+	return Ar::units::Frequency::from<std::ratio<1, 1>>(static_cast<Ar::units::Frequency::BaseType>(x));
+}
+[[nodiscard]] constexpr Ar::units::Frequency operator""_kHz(Ar::units::literalFloat x) { return Ar::units::Frequency::from<std::kilo>(static_cast<float>(x)); }
+[[nodiscard]] constexpr Ar::units::Frequency operator""_kHz(Ar::units::literalInt x) {
+	return Ar::units::Frequency::from<std::kilo>(static_cast<Ar::units::Frequency::BaseType>(x));
+}
+[[nodiscard]] constexpr Ar::units::Frequency operator""_MHz(Ar::units::literalFloat x) { return Ar::units::Frequency::from<std::mega>(static_cast<float>(x)); }
+[[nodiscard]] constexpr Ar::units::Frequency operator""_MHz(Ar::units::literalInt x) {
+	return Ar::units::Frequency::from<std::mega>(static_cast<Ar::units::Frequency::BaseType>(x));
+}
+
+[[nodiscard]] constexpr Ar::units::Duration operator""_s(Ar::units::literalFloat x) {
+	return Ar::units::Duration::from<std::ratio<1, 1>>(static_cast<float>(x));
+}
 [[nodiscard]] constexpr Ar::units::Duration operator""_s(Ar::units::literalInt x) {
 	return Ar::units::Duration::from<std::ratio<1, 1>>(static_cast<Ar::units::Duration::BaseType>(x));
 }
@@ -401,7 +467,9 @@ namespace Ar::units {
 	return Ar::units::Voltage::from<std::ratio<1, 1>>(static_cast<Ar::units::Voltage::BaseType>(x));
 }
 [[nodiscard]] constexpr Ar::units::Voltage operator""_mV(Ar::units::literalFloat x) { return Ar::units::Voltage::from<std::milli>(static_cast<float>(x)); }
-[[nodiscard]] constexpr Ar::units::Voltage operator""_mV(Ar::units::literalInt x) { return Ar::units::Voltage::from<std::milli>(static_cast<Ar::units::Voltage::BaseType>(x)); }
+[[nodiscard]] constexpr Ar::units::Voltage operator""_mV(Ar::units::literalInt x) {
+	return Ar::units::Voltage::from<std::milli>(static_cast<Ar::units::Voltage::BaseType>(x));
+}
 [[nodiscard]] constexpr Ar::units::Voltage operator""_uV(Ar::units::literalFloat x) { return Ar::units::Voltage::from<std::micro>(static_cast<float>(x)); }
 [[nodiscard]] constexpr Ar::units::Voltage operator""_uV(Ar::units::literalInt x) {
 	return Ar::units::Voltage::from<std::micro>(static_cast<Ar::units::Duration::BaseType>(x));
@@ -412,54 +480,160 @@ namespace Ar::units {
 	return Ar::units::Current::from<std::ratio<1, 1>>(static_cast<Ar::units::Current::BaseType>(x));
 }
 [[nodiscard]] constexpr Ar::units::Current operator""_mA(Ar::units::literalFloat x) { return Ar::units::Current::from<std::milli>(static_cast<float>(x)); }
-[[nodiscard]] constexpr Ar::units::Current operator""_mA(Ar::units::literalInt x) { return Ar::units::Current::from<std::milli>(static_cast<Ar::units::Current::BaseType>(x)); }
+[[nodiscard]] constexpr Ar::units::Current operator""_mA(Ar::units::literalInt x) {
+	return Ar::units::Current::from<std::milli>(static_cast<Ar::units::Current::BaseType>(x));
+}
 [[nodiscard]] constexpr Ar::units::Current operator""_uA(Ar::units::literalFloat x) { return Ar::units::Current::from<std::micro>(static_cast<float>(x)); }
 [[nodiscard]] constexpr Ar::units::Current operator""_uA(Ar::units::literalInt x) {
 	return Ar::units::Current::from<std::micro>(static_cast<Ar::units::Duration::BaseType>(x));
 }
 
-[[nodiscard]] constexpr Ar::units::Power operator""_kW(Ar::units::literalFloat x) { return Ar::units::Power::from<std::kilo>(static_cast<float>(x)); }
-[[nodiscard]] constexpr Ar::units::Power operator""_kW(Ar::units::literalInt x) { return Ar::units::Power::from<std::kilo>(static_cast<Ar::units::Power::BaseType>(x)); }
 [[nodiscard]] constexpr Ar::units::Power operator""_W(Ar::units::literalFloat x) { return Ar::units::Power::from<std::ratio<1, 1>>(static_cast<float>(x)); }
-[[nodiscard]] constexpr Ar::units::Power operator""_W(Ar::units::literalInt x) { return Ar::units::Power::from<std::ratio<1, 1>>(static_cast<Ar::units::Power::BaseType>(x)); }
+[[nodiscard]] constexpr Ar::units::Power operator""_W(Ar::units::literalInt x) {
+	return Ar::units::Power::from<std::ratio<1, 1>>(static_cast<Ar::units::Power::BaseType>(x));
+}
 [[nodiscard]] constexpr Ar::units::Power operator""_mW(Ar::units::literalFloat x) { return Ar::units::Power::from<std::milli>(static_cast<float>(x)); }
-[[nodiscard]] constexpr Ar::units::Power operator""_mW(Ar::units::literalInt x) { return Ar::units::Power::from<std::milli>(static_cast<Ar::units::Power::BaseType>(x)); }
+[[nodiscard]] constexpr Ar::units::Power operator""_mW(Ar::units::literalInt x) {
+	return Ar::units::Power::from<std::milli>(static_cast<Ar::units::Power::BaseType>(x));
+}
+
+[[nodiscard]] constexpr Ar::units::Energy operator""_J(Ar::units::literalFloat x) { return Ar::units::Energy::from<std::ratio<1, 1>>(static_cast<float>(x)); }
+[[nodiscard]] constexpr Ar::units::Energy operator""_J(Ar::units::literalInt x) {
+	return Ar::units::Energy::from<std::ratio<1, 1>>(static_cast<Ar::units::Energy::BaseType>(x));
+}
+[[nodiscard]] constexpr Ar::units::Energy operator""_mJ(Ar::units::literalFloat x) { return Ar::units::Energy::from<std::milli>(static_cast<float>(x)); }
+[[nodiscard]] constexpr Ar::units::Energy operator""_mJ(Ar::units::literalInt x) {
+	return Ar::units::Energy::from<std::milli>(static_cast<Ar::units::Energy::BaseType>(x));
+}
+
+[[nodiscard]] constexpr Ar::units::Resistance operator""_kOhm(Ar::units::literalFloat x) {
+	return Ar::units::Resistance::from<std::kilo>(static_cast<float>(x));
+}
+[[nodiscard]] constexpr Ar::units::Resistance operator""_kOhm(Ar::units::literalInt x) {
+	return Ar::units::Resistance::from<std::kilo>(static_cast<Ar::units::Resistance::BaseType>(x));
+}
+[[nodiscard]] constexpr Ar::units::Resistance operator""_Ohm(Ar::units::literalFloat x) {
+	return Ar::units::Resistance::from<std::ratio<1, 1>>(static_cast<float>(x));
+}
+[[nodiscard]] constexpr Ar::units::Resistance operator""_Ohm(Ar::units::literalInt x) {
+	return Ar::units::Resistance::from<std::ratio<1, 1>>(static_cast<Ar::units::Resistance::BaseType>(x));
+}
+[[nodiscard]] constexpr Ar::units::Resistance operator""_mOhm(Ar::units::literalFloat x) {
+	return Ar::units::Resistance::from<std::milli>(static_cast<float>(x));
+}
+[[nodiscard]] constexpr Ar::units::Resistance operator""_mOhm(Ar::units::literalInt x) {
+	return Ar::units::Resistance::from<std::milli>(static_cast<Ar::units::Resistance::BaseType>(x));
+}
 
 // -------------------------- special operators ----------------------------
 
-template<typename Lhs, typename Rhs>
-constexpr auto tarMul(const Lhs &lhs, const Rhs &rhs) {
-	static_assert(std::is_floating_point_v<typename Lhs::rep>, "Lhs base type must be floating point");
-	static_assert(std::is_floating_point_v<typename Rhs::rep>, "Rhs base type must be floating point");
-	static_assert(std::is_same_v<typename Lhs::period, typename std::ratio<1, 1>>, "Lhs ration<1,1> is expected, why would you use anything else with float?");
-	static_assert(std::is_same_v<typename Rhs::period, typename std::ratio<1, 1>>, "Rhs ration<1,1> is expected, why would you use anything else with float?");
-	return Lhs(lhs.count() * rhs.count());
+template<typename Tunit>
+constexpr void BaseFloatsAndUnityRatio(const Tunit u) {
+	using T = std::remove_reference_t<std::remove_cv_t<Tunit>>;
+	static_assert(std::is_floating_point_v<typename T::BaseType>, "unit base type must be floating point");
+	static_assert(
+		std::is_same_v<typename T::BaseResolution, typename std::ratio<1, 1>>, "unit ration<1,1> is expected, why would you use anything else with float?");
 }
 
-template<typename Lhs, typename Rhs>
-constexpr auto tarDiv(const Lhs &lhs, const Rhs &rhs) {
-	static_assert(std::is_floating_point_v<typename Lhs::rep>, "Lhs base type must be floating point");
-	static_assert(std::is_floating_point_v<typename Rhs::rep>, "Rhs base type must be floating point");
-	static_assert(std::is_same_v<typename Lhs::period, typename std::ratio<1, 1>>, "Lhs ration<1,1> is expected, why would you use anything else with float?");
-	static_assert(std::is_same_v<typename Rhs::period, typename std::ratio<1, 1>>, "Rhs ration<1,1> is expected, why would you use anything else with float?");
-	return Lhs(lhs.count() / rhs.count());
-}
+// following conversions are simple only for floats
 
+// Power conversions
+// P = V * I
 constexpr Ar::units::Power operator*(const Ar::units::Voltage &v, const Ar::units::Current &c) {
-	return Ar::units::Power::fromTypeAndRatio(tarMul(v.asTypeAndRatioAbs(), c.asTypeAndRatioAbs()));
+	BaseFloatsAndUnityRatio(v);
+	BaseFloatsAndUnityRatio(c);
+	return Ar::units::Power::from(v.inBasicUnit<float>() * c.inBasicUnit<float>());
 }
 
+// P = I * V
 constexpr Ar::units::Power operator*(const Ar::units::Current &c, const Ar::units::Voltage &v) {
-	return Ar::units::Power::fromTypeAndRatio(tarMul(c.asTypeAndRatioAbs(), v.asTypeAndRatioAbs()));
+	BaseFloatsAndUnityRatio(c);
+	BaseFloatsAndUnityRatio(v);
+	return Ar::units::Power::from(c.inBasicUnit<float>() * v.inBasicUnit<float>());
 }
 
+// I = P / V
 constexpr Ar::units::Current operator/(const Ar::units::Power &p, const Ar::units::Voltage &v) {
-	return Ar::units::Current::fromTypeAndRatio(tarDiv(p.asTypeAndRatioAbs(), v.asTypeAndRatioAbs()));
+	BaseFloatsAndUnityRatio(p);
+	BaseFloatsAndUnityRatio(v);
+	return Ar::units::Current::from(p.inBasicUnit<float>() / v.inBasicUnit<float>());
 }
 
+// V = P / I
 constexpr Ar::units::Voltage operator/(const Ar::units::Power &p, const Ar::units::Current &c) {
-	return Ar::units::Voltage::fromTypeAndRatio(tarDiv(p.asTypeAndRatioAbs(), c.asTypeAndRatioAbs()));
+	BaseFloatsAndUnityRatio(p);
+	BaseFloatsAndUnityRatio(c);
+	return Ar::units::Voltage::from(p.inBasicUnit<float>() / c.inBasicUnit<float>());
 }
+
+// Energy conversions
+// E = P * t
+constexpr Ar::units::Energy operator*(const Ar::units::Power &p, const Ar::units::Duration &t) {
+	BaseFloatsAndUnityRatio(p);
+	return Ar::units::Energy::from(p.inBasicUnit<float>() * t.inBasicUnit<float>());
+}
+
+// E = t * P
+constexpr Ar::units::Energy operator*(const Ar::units::Duration &t, const Ar::units::Power &p) {
+	BaseFloatsAndUnityRatio(p);
+	return Ar::units::Energy::from(t.inBasicUnit<float>() * p.inBasicUnit<float>());
+}
+
+// t = E / P
+constexpr Ar::units::Duration operator/(const Ar::units::Energy &e, const Ar::units::Power &p) {
+	BaseFloatsAndUnityRatio(e);
+	BaseFloatsAndUnityRatio(p);
+	return Ar::units::Duration::from(e.inBasicUnit<float>() / p.inBasicUnit<float>());
+}
+
+// P = E / t
+constexpr Ar::units::Power operator/(const Ar::units::Energy &e, const Ar::units::Duration &t) {
+	BaseFloatsAndUnityRatio(e);
+	return Ar::units::Power::from(e.inBasicUnit<float>() / t.inBasicUnit<float>());
+}
+
+// OHMs' law
+// V = R * I
+constexpr Ar::units::Voltage operator*(const Ar::units::Resistance &r, const Ar::units::Current &c) {
+	BaseFloatsAndUnityRatio(r);
+	BaseFloatsAndUnityRatio(c);
+	return Ar::units::Voltage::from(r.inBasicUnit<float>() * c.inBasicUnit<float>());
+}
+
+// V = I * R
+constexpr Ar::units::Voltage operator*(const Ar::units::Current &c, const Ar::units::Resistance &r) {
+	BaseFloatsAndUnityRatio(r);
+	BaseFloatsAndUnityRatio(c);
+	return Ar::units::Voltage::from(c.inBasicUnit<float>() * r.inBasicUnit<float>());
+}
+
+// R = V / I
+constexpr Ar::units::Resistance operator/(const Ar::units::Voltage &v, const Ar::units::Current &c) {
+	BaseFloatsAndUnityRatio(v);
+	BaseFloatsAndUnityRatio(c);
+	return Ar::units::Resistance::from(v.inBasicUnit<float>() / c.inBasicUnit<float>());
+}
+
+// I = V / R
+constexpr Ar::units::Current operator/(const Ar::units::Voltage &v, const Ar::units::Resistance &r) {
+	BaseFloatsAndUnityRatio(v);
+	BaseFloatsAndUnityRatio(r);
+	return Ar::units::Current::from(v.inBasicUnit<float>() / r.inBasicUnit<float>());
+}
+
+static_assert(1_W * 2_s == 2_J);
+static_assert(2_W * 1_s == 2_J);
+static_assert(1_s * 2_W == 2_J);
+static_assert(2_s * 1_W == 2_J);
+
+// because decimal floats...
+static_assert(20_ms * 10_W > 199_mJ);
+static_assert(20_ms * 10_W < 201_mJ);
+
+static_assert(2_J / 1_s == 2_W);
+static_assert(10_J / 2_s == 5_W);
+static_assert(10_J / 1_W == 10_s);
+static_assert(6_J / 3_W == 2_s);
 
 namespace Ar {
 	using Time = Ar::units::Time;

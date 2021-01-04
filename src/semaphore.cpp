@@ -40,18 +40,11 @@
 namespace Ar {
 
 	//------------------------------------------------------------------------------
-	// Prototypes
-	//------------------------------------------------------------------------------
-
-	static void ar_semaphore_deferred_get(void *object, void *object2);
-	static void ar_semaphore_deferred_put(void *object, void *object2);
-
-	//------------------------------------------------------------------------------
 	// Code
 	//------------------------------------------------------------------------------
 
 	// See ar_kernel.h for documentation of this function.
-	Semaphore::Semaphore(const char *name, unsigned int count) : m_count(count) {
+	Semaphore::Semaphore(const char *name, const unsigned int count) : m_count(count) {
 		assert(!Port::get_irq_state());
 
 		std::strncpy(m_name.data(), name ? name : Ar::anon_name.data(), Ar::config::MAX_NAME_LENGTH);
@@ -82,12 +75,12 @@ namespace Ar {
 	// See ar_kernel.h for documentation of this function.
 	Ar::Status Semaphore::acquire(std::optional<Duration> timeout) {
 
-		// Ensure that only 0 timeouts are specified when called from an IRQ handler.
 		if (Port::get_irq_state()) {
-			if (timeout.has_value() && timeout.value()) { return Ar::Status::notFromInterruptError; }
-
 			// Handle irq state by deferring the get.
-			return Kernel::postDeferredAction(Semaphore::deferred_acquire, this);
+			// Ensure that only 0 timeouts are specified when called from an IRQ handler.
+			if (timeout.has_value() && timeout.value().isZero()) { return Kernel::postDeferredAction(Semaphore::deferred_acquire, this); }
+
+			return Ar::Status::notFromInterruptError;
 		}
 
 		return acquire_internal(timeout);
@@ -98,7 +91,7 @@ namespace Ar {
 
 		while (m_count == 0) {
 			// Count is 0, so we must block. Return immediately if the timeout is 0.
-			if (timeout.has_value() && timeout.value()) { return Status::timeoutError; }
+			if (timeout.has_value() && timeout.value().isZero()) { return Status::timeoutError; }
 
 			// Block this thread on the semaphore.
 			Thread *thread = Thread::getCurrent();
@@ -118,7 +111,8 @@ namespace Ar {
 
 		// Take ownership of the semaphore.
 		assert(m_count > 0);
-		--m_count;
+		//FIXME: what if there is ctx switch at this moment and sb else acquires (zeros out) this semaphore?
+		m_count--;
 
 		return Ar::Status::success;
 	}
@@ -127,7 +121,7 @@ namespace Ar {
 		KernelLock guard;
 
 		// Increment count.
-		++m_count;
+		m_count++;
 
 		// Are there any threads waiting on this semaphore?
 		if (m_blockedList.m_head) {

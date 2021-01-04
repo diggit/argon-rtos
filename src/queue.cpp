@@ -84,35 +84,112 @@ namespace Ar {
 #endif // AR_GLOBAL_OBJECT_LISTS
 	}
 
-	Ar::Status Queue::send_internal(const void *element, std::optional<Duration> timeout) {
-		KernelLock guard;
+	Ar::Status Queue::send(const void *element, std::optional<Duration> timeout) {
+		if (!element) { return Ar::Status::invalidParameterError; }
 
-		// Check for full queue.
-		while (m_count >= m_capacity) {
-			// If the queue is full and a zero timeout was given, return immediately.
-			if (timeout.has_value() && timeout.value()) { return Status::timeoutError; }
-
-			// Otherwise block until the queue has room.
-			auto *thread = Thread::getCurrent();
-			thread->block(m_sendBlockedList, timeout);
-
-			// We're back from the scheduler.
-			// Check for errors and exit early if there was one.
-			if (thread->m_unblockStatus != Ar::Status::success) {
-				// Probably timed out waiting for room in the queue.
-				m_sendBlockedList.remove(&thread->m_blockedNode);
-				return thread->m_unblockStatus;
-			}
+		if (Port::get_irq_state()) {
+			// only zero timeout allowed from interrupt
+			if (timeout.has_value() && timeout.value().isZero()) { return send_isr(element); }
+			return Ar::Status::notFromInterruptError;
 		}
 
-		// Copy queue element into place.
-		auto *elementSlot = QUEUE_ELEMENT(m_tail);
+		{
+			KernelLock guard; // TODO: is is really necessary?
 
-		std::memcpy(elementSlot, element, m_elementSize);
+			{
+				Position wrPos;
+				Position wrPosNext;
+				do {
+					wrPos = m_writePos.load(std::memory_order::relaxed);
+					wrPosNext = wrPos;
+					wrPosNext.writer = (wrPosNext.writer + 1) % m_capacity;
+					if (wrPosNext.writer == m_readPos.load().writer) {
+						if (timeout.has_value() && timeout.value().isZero()) { return Status::timeoutError; }
 
-		// Update queue tail pointer and count.
-		if (++m_tail >= m_capacity) { m_tail = 0; }
-		++m_count;
+						// Otherwise block until the queue has room.
+						auto *thread = Thread::getCurrent();
+						thread->block(m_sendBlockedList, timeout);
+
+						// We're back from the scheduler.
+						// Check for errors and exit early if there was one.
+						if (thread->m_unblockStatus != Ar::Status::success) {
+							// Probably timed out waiting for room in the queue.
+							m_sendBlockedList.remove(&thread->m_blockedNode);
+							return thread->m_unblockStatus;
+						}
+						continue; // restart wrPos acquire loop
+					}
+				} while (!m_writePos.compare_exchange_weak(wrPos, wrPosNext));
+
+
+				// Copy queue element into place.
+				auto *elementSlot = QUEUE_ELEMENT(wrPos.writer);
+
+				std::memcpy(elementSlot, element, m_elementSize);
+			}
+
+			{
+				// this isr was root of nesting
+				Position wrPos;
+				Position wrPosNext;
+				do {
+					wrPos = m_writePos.load(std::memory_order::relaxed);
+					wrPosNext = wrPos;
+					wrPosNext.writerPropagate();
+				} while (!m_writePos.compare_exchange_weak(wrPos, wrPosNext));
+			}
+
+			send_internal_finalize();
+
+		}
+		return Ar::Status::success;
+	}
+
+	Ar::Status Queue::send_isr(const void *element) {
+		if (!element) { return Ar::Status::invalidParameterError; }
+
+		bool finisher = false;
+
+		{
+			Position wrPos;
+			Position wrPosNext;
+			do {
+				wrPos = m_writePos.load(std::memory_order::relaxed);
+				wrPosNext = wrPos;
+				wrPosNext.writer = (wrPosNext.writer + 1) % m_capacity;
+				if (wrPosNext.writer == m_readPos.load().writer) {
+					return Status::queueFullError;
+				}
+			} while (!m_writePos.compare_exchange_weak(wrPos, wrPosNext));
+
+			finisher = wrPos.reader == wrPos.writer; // true if there are no pending unfinished writes (=> we are root of nesting)
+
+			// Copy queue element into place.
+			auto *elementSlot = QUEUE_ELEMENT(wrPos.writer);
+
+			std::memcpy(elementSlot, element, m_elementSize);
+		}
+
+		if (finisher) {
+			// this isr was root of nesting
+			Position wrPos;
+			Position wrPosNext;
+			do {
+				wrPos = m_writePos.load(std::memory_order::relaxed);
+				wrPosNext = wrPos;
+				wrPosNext.writerPropagate();
+			} while (!m_writePos.compare_exchange_weak(wrPos, wrPosNext));
+
+			return Kernel::postDeferredAction(Queue::deferred_send_internal_isr_finalize, this);
+		}
+
+		return Ar::Status::success;
+	}
+
+	void Queue::deferred_send_internal_isr_finalize(void *queue, void *unused) { reinterpret_cast<Queue *>(queue)->send_internal_finalize(); }
+
+	void Queue::send_internal_finalize() {
+		KernelLock guard;
 
 		// Are there any threads waiting to receive?
 		if (m_receiveBlockedList.m_head) {
@@ -129,66 +206,134 @@ namespace Ar {
 				m_runLoop->wake();
 			}
 		}
-
-		return Ar::Status::success;
-	}
-
-	void Queue::deferred_send(void *object, void *object2) {
-		if (!assertWrap(object)) { return; };
-		reinterpret_cast<Queue *>(object)->send_internal(object2, Duration::zero());
-	}
-
-	// See ar_kernel.h for documentation of this function.
-	Ar::Status Queue::send(const void *element, std::optional<Duration> timeout) {
-		if (!element) { return Ar::Status::invalidParameterError; }
-
-		// Handle irq state by deferring the operation.
-		if (Port::get_irq_state()) { return Kernel::postDeferredAction(Queue::deferred_send, this, const_cast<void *>(element)); }
-
-		return send_internal(element, timeout);
 	}
 
 	// See ar_kernel.h for documentation of this function.
 	Ar::Status Queue::receive(void *element, std::optional<Duration> timeout) {
 		if (!element) { return Ar::Status::invalidParameterError; }
-		assert(!Port::get_irq_state());
+
+		if (Port::get_irq_state()) {
+			// only zero timeout allowed from interrupt
+			if (timeout.has_value() && timeout.value().isZero()) { return send_isr(element); }
+			return Ar::Status::notFromInterruptError;
+		}
 
 		{
-			KernelLock guard;
+			KernelLock guard; // TODO: is is really necessary?
 
-			// Check for empty queue.
-			while (m_count == 0) {
-				if (!timeout.value_or(Duration::zero())) { return Status::queueEmptyError; }
+			{
+				Position rdPos;
+				Position rdPosNext;
+				do {
+					rdPos = m_readPos.load(std::memory_order::relaxed);
+					rdPosNext = rdPos;
+					rdPosNext.reader = (rdPosNext.reader + 1) % m_capacity;
+					if (rdPos.reader == m_writePos.load().reader) {
+						if (timeout.has_value() && timeout.value().isZero()) { return Status::timeoutError; }
 
-				// Otherwise block until the queue has room.
-				auto *thread = Thread::getCurrent();
-				thread->block(m_receiveBlockedList, timeout);
+						// Otherwise block until the queue has new element.
+						auto *thread = Thread::getCurrent();
+						thread->block(m_receiveBlockedList, timeout);
 
-				// We're back from the scheduler.
-				// Check for errors and exit early if there was one.
-				if (thread->m_unblockStatus != Ar::Status::success) {
-					// Timed out waiting for the queue to not be empty, or another error occurred.
-					m_receiveBlockedList.remove(&thread->m_blockedNode);
-					return thread->m_unblockStatus;
+						// We're back from the scheduler.
+						// Check for errors and exit early if there was one.
+						if (thread->m_unblockStatus != Ar::Status::success) {
+							// Probably timed out waiting for data in the queue.
+							m_receiveBlockedList.remove(&thread->m_blockedNode);
+							return thread->m_unblockStatus;
+						}
+						continue; // restart rdPos acquire loop
+					}
+				} while (!m_readPos.compare_exchange_weak(rdPos, rdPosNext));
+
+				// Copy queue element into place.
+				auto *elementSlot = QUEUE_ELEMENT(rdPos.writer);
+
+				std::memcpy(element, elementSlot, m_elementSize);
+			}
+
+			{
+				// this isr was root of nesting
+				Position rdPos;
+				Position rdPosNext;
+				do {
+					rdPos = m_readPos.load(std::memory_order::relaxed);
+					rdPosNext = rdPos;
+					rdPosNext.readerPropagate();
+				} while (!m_readPos.compare_exchange_weak(rdPos, rdPosNext));
+			}
+
+			send_internal_finalize();
+
+		}
+		return Ar::Status::success;
+	}
+
+	Ar::Status Queue::receive_isr(void *element) {
+		if (!element) { return Ar::Status::invalidParameterError; }
+
+		bool finisher = false;
+
+		{
+			Position rdPos;
+			Position rdPosNext;
+			do {
+				rdPos = m_readPos.load(std::memory_order::relaxed);
+				rdPosNext = rdPos;
+				rdPosNext.reader = (rdPosNext.reader + 1) % m_capacity;
+				if (rdPos.reader == m_writePos.load().reader) {
+					return Status::queueFullError;
 				}
-			}
+			} while (!m_readPos.compare_exchange_weak(rdPos, rdPosNext));
 
-			// Read out data.
-			auto *elementSlot = QUEUE_ELEMENT(m_head);
+			finisher = rdPos.reader == rdPos.writer; // true if there are no pending unfinished writes (=> we are root of nesting)
+
+			// Copy queue element into place.
+			auto *elementSlot = QUEUE_ELEMENT(rdPos.reader);
+
 			std::memcpy(element, elementSlot, m_elementSize);
+		}
 
-			// Update queue head and count.
-			if (++m_head >= m_capacity) { m_head = 0; }
-			--m_count;
+		if (finisher) {
+			// this isr was root of nesting
+			Position rdPos;
+			Position rdPosNext;
+			do {
+				rdPos = m_readPos.load(std::memory_order::relaxed);
+				rdPosNext = rdPos;
+				rdPosNext.readerPropagate();
+			} while (!m_readPos.compare_exchange_weak(rdPos, rdPosNext));
 
-			// Are there any threads waiting to send?
-			if (m_sendBlockedList.m_head) {
-				// Unblock the head of the blocked list.
-				auto *thread = m_sendBlockedList.getHead<Thread>();
-				thread->unblockWithStatus(m_sendBlockedList, Ar::Status::success);
-			}
+			return Kernel::postDeferredAction(Queue::deferred_receive_internal_isr_finalize, this);
 		}
 
 		return Ar::Status::success;
+	}
+
+	void Queue::deferred_receive_internal_isr_finalize(void *queue, void *unused) { reinterpret_cast<Queue *>(queue)->receive_internal_finalize(); }
+
+	void Queue::receive_internal_finalize() {
+		KernelLock guard;
+
+		// Are there any threads waiting to send?
+		if (m_sendBlockedList.m_head) {
+			// Unblock the head of the blocked list.
+			auto *thread = m_sendBlockedList.getHead<Thread>();
+			thread->unblockWithStatus(m_sendBlockedList, Ar::Status::success);
+		}
+	}
+
+	void Queue::flush() {
+		assert(!Port::get_irq_state()); //not sure if this would work  from isr
+		KernelLock guard;
+		//move readPos to writepos
+		
+		Position rdPos;
+		Position rdPosNext;
+		do {
+			rdPos = m_readPos.load(std::memory_order::relaxed);
+			rdPosNext = rdPos;
+			rdPosNext.reader = m_writePos.load().reader;
+		} while (!m_readPos.compare_exchange_weak(rdPos, rdPosNext));
 	}
 } // namespace Ar

@@ -14,10 +14,10 @@ namespace Ar {
 	 *
 	 * @ingroup ar_runloop
 	 */
-	struct Thread;
-	struct Queue;
-	struct Channel;
-	struct Timer;
+	class Thread;
+	class Queue;
+	class Channel;
+	class Timer;
 
 	class Runloop {
 		friend Timer;
@@ -48,13 +48,13 @@ namespace Ar {
 		 *
 		 * @ingroup ar_runloop
 		 */
-		Name m_name; //!< Name of the runloop.
-		Thread *m_thread {nullptr}; //!< Thread the runloop is running on. nullptr when the runloop is not running.
-		List m_timers; //!< Timers associated with the runloop.
+		Name m_name {}; //!< Name of the runloop.
+		Thread *m_thread {}; //!< Thread the runloop is running on. nullptr when the runloop is not running.
+		List m_timers {}; //!< Timers associated with the runloop.
 		List m_queues {}; //!< Queues associated with the runloop.
 		struct RunloopFunctionInfo {
-			RunloopFunction function {nullptr}; //!< The callback function pointer.
-			void *param {nullptr}; //!< User parameter passed to the callback.
+			RunloopFunction function {}; //!< The callback function pointer.
+			void *param {}; //!< User parameter passed to the callback.
 		};
 		std::array<RunloopFunctionInfo, config::RUNLOOP_FUNCTION_QUEUE_SIZE> m_functions {}; //!< Function queue.
 		std::atomic<std::size_t> m_functionCount {}; //!< Number of functions in the queue.

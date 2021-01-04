@@ -31,6 +31,7 @@
  * @brief Source for Ar kernel.
  */
 
+#include <cstdint>
 #include <cstring>
 #include "trace.hpp"
 #include "argon/kernel.hpp"
@@ -40,11 +41,6 @@
 //------------------------------------------------------------------------------
 // Prototypes
 //------------------------------------------------------------------------------
-
-static void THREAD_STACK_OVERFLOW_DETECTED();
-static void DEFERRED_ACTION_QUEUE_OVERFLOW_DETECTED();
-
-static void idle_entry(void *param);
 
 namespace Ar {
 
@@ -61,7 +57,10 @@ namespace Ar {
 	//! order is not guaranteed, we can be sure that initialization of `g_ar` from
 	//! .rodata will happen before static initializers are called.
 
-	Kernel g_ar {};
+	Kernel &kernel() {
+		static Kernel _kernel;
+		return _kernel;
+	}
 
 #if AR_GLOBAL_OBJECT_LISTS
 	//! Global list of kernel objects.
@@ -85,7 +84,7 @@ namespace Ar {
 #endif
 	void Kernel::idle_entry(void *param) {
 		for (;;) {
-			// while (g_ar.m_nextWakeup.has_value() && Time::now() < g_ar.m_nextWakeup.value()) {}
+			// while (kernel().m_nextWakeup.has_value() && Time::now() < kernel().m_nextWakeup.value()) {}
 
 			if constexpr (config::ENABLE_IDLE_SLEEP) {
 				__DSB();
@@ -129,9 +128,9 @@ namespace Ar {
 		// Create the idle thread. Priority 1 is passed to init function to pass the
 		// assertion and then set to the correct 0 manually.
 		// ar_thread_create(&idleThread, "idle", idle_entry, 0, s_idleThreadStack, sizeof(s_idleThreadStack), 1, kArSuspendThread);
-		m_idleThread.m_priority = 0;
+		Kernel::idleThread().m_priority = 0;
 		// ar_thread_resume(&idleThread);
-		m_idleThread.resume();
+		Kernel::idleThread().resume();
 
 		// Set up system tick timer
 		Port::init_timer();
@@ -206,13 +205,13 @@ namespace Ar {
 
 		// Compare against next wakeup time we previously computed.
 		if (!m_nextWakeup.has_value()) { return false; }
-		if (Time::now() < g_ar.m_nextWakeup.value()) {
+		if (Time::now() < kernel().m_nextWakeup.value()) {
 			assert(!fromTimerIrq);
 			return false;
 		}
 
 		// Scan list of sleeping threads to see if any should wake up.
-		List::Node *node = g_ar.m_sleepingList.m_head;
+		List::Node *node = kernel().m_sleepingList.m_head;
 		bool wasThreadWoken = false;
 
 		if (node) {
@@ -298,7 +297,7 @@ namespace Ar {
 
 	void Kernel::scheduler() {
 		// There must always be at least one thread on the ready list.
-		assert(g_ar.m_readyList.m_head);
+		assert(kernel().m_readyList.m_head);
 
 		auto schedulerEntryTime = Time::now();
 
@@ -309,7 +308,7 @@ namespace Ar {
 
 		// Handle these cases by selecting the first thread in the ready list, which will have the
 		// highest priority since the ready list is sorted.
-		// 1. The first time the scheduler runs and g_ar.currentThread is nullptr.
+		// 1. The first time the scheduler runs and kernel().currentThread is nullptr.
 		// 2. The current thread was suspended.
 		// 3. Higher priority thread became ready.
 		if (!m_currentThread || m_currentThread->m_state != Thread::ThreadState::running || first->m_priority > m_currentThread->m_priority) {
@@ -352,21 +351,23 @@ namespace Ar {
 				}
 
 				systemLoad.recordSwitch(); // TODO: maybe too early
-				if (m_currentThread && m_currentThread != &m_idleThread) { // accumulate times only from regular threads
+				if (m_currentThread && m_currentThread != &Kernel::idleThread()) { // accumulate times only from regular threads
 					systemLoad.accumulate(timeSpentInThread);
 				}
 			}
 			auto prevThread = m_currentThread;
 			m_currentThread = highest;
-			Port::refill_stack(prevThread);
+			if constexpr (Ar::config::REFILL_UNUSED_STACK_ON_SUSPEND) {
+				Port::refill_stack(prevThread);
+			}
 		}
 
 		// Check for stack overflow on the current thread.
 		if (m_currentThread) {
-			std::uint32_t current = reinterpret_cast<std::uint32_t>(m_currentThread->m_stackPointer);
-			std::uint32_t bottom = reinterpret_cast<std::uint32_t>(m_currentThread->m_stackBottom);
-			std::uint32_t check = *(m_currentThread->m_stackBottom);
-			if ((current < bottom) || (check != Port::stackCheckValue)) { THREAD_STACK_OVERFLOW_DETECTED(); }
+			const auto current = reinterpret_cast<std::uintptr_t>(m_currentThread->m_stackPointer);
+			const auto bottom = reinterpret_cast<std::uintptr_t>(m_currentThread->m_stackBottom);
+			const auto check = *(m_currentThread->m_stackBottom);
+			if (!assertWrap((current >= bottom) && (check == Port::stackCheckValue))) { THREAD_STACK_OVERFLOW_DETECTED(); }
 		}
 
 		// Compute delay until next wakeup event and adjust timer.
@@ -409,7 +410,7 @@ namespace Ar {
 		// See if round-robin needs to be used.
 		if (m_flags.needsRoundRobin) {
 			// No need to check sleeping threads!
-			return Time::now() + (config::timeQuanta * config::schedulerPeriod);
+			return Time::now() + config::schedulerPeriod;
 		}
 
 		// Check for a sleeping thread. The sleeping list is sorted by wakeup time, so we only
@@ -471,7 +472,6 @@ namespace Ar {
 		if constexpr (config::ENABLE_SYSTEM_LOAD || config::ENABLE_SYSTEM_LOAD_PER_THREAD) {
 
 			if constexpr (config::ENABLE_SYSTEM_LOAD_PER_THREAD) {
-				std::size_t threadCount = 0;
 #if AR_GLOBAL_OBJECT_LISTS
 				std::array<List *const, 1> threadLists = {&g_ar_objects.threads};
 #else
@@ -525,7 +525,7 @@ namespace Ar {
 		m_entries[index].action = action;
 		m_entries[index].object = object;
 
-		++index; // FIXME: implement more robust iterator
+		++index; // TODOFIXME: implement more robust iterator
 		if (index >= config::DEFERRED_ACTION_QUEUE_SIZE) { index %= config::DEFERRED_ACTION_QUEUE_SIZE; }
 		m_entries[index].action = reinterpret_cast<DeferredAction>(actionExtraValue);
 		m_entries[index].object = arg;
@@ -540,15 +540,15 @@ namespace Ar {
 		do {
 			count = m_count;
 			if (count + entryCount > config::DEFERRED_ACTION_QUEUE_SIZE) { return Status::queueFullError; }
-		} while (m_count.compare_exchange_weak(count, count + entryCount));
+		} while (!m_count.compare_exchange_weak(count, count + entryCount));
 
 		auto last = m_last.load();
-		do { last = m_last; } while (m_last.compare_exchange_weak(last, (last + entryCount) % config::DEFERRED_ACTION_QUEUE_SIZE));
+		do { last = m_last; } while (!m_last.compare_exchange_weak(last, (last + entryCount) % config::DEFERRED_ACTION_QUEUE_SIZE));
 
 		newEntryIndex = last;
 		return Status::success;
 	}
-
+	//TODO: return refference or assert, except startup, there is no scenario with unknown current thread
 	Thread *Thread::getCurrent() { return Kernel::getCurrent(); }
 } // namespace Ar
 

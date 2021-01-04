@@ -100,7 +100,7 @@ void ar_port_init_system()
 #endif // __FPU_USED
 
     // Init PSP.
-    __set_PSP((uint32_t)g_ar.idleThread.m_stackPointer);
+    __set_PSP((uint32_t)kernel().idleThread.m_stackPointer);
 
     // Set priorities for the exceptions we use in the kernel.
     NVIC_SetPriority(SVCall_IRQn, kHandlerPriority);
@@ -423,9 +423,9 @@ uint32_t ar_port_yield_isr(uint32_t topOfStack, uint32_t isExtendedFrame)
 {
 #if __FPU_USED
     // Save whether there is an extended frame.
-    if (g_ar.currentThread)
+    if (kernel().currentThread)
     {
-        g_ar.currentThread->m_portData.m_hasExtendedFrame = isExtendedFrame;
+        kernel().currentThread->m_portData.m_hasExtendedFrame = isExtendedFrame;
     }
 #endif // __FPU_USED
 
@@ -434,7 +434,7 @@ uint32_t ar_port_yield_isr(uint32_t topOfStack, uint32_t isExtendedFrame)
 
 #if __FPU_USED
     // Pass whether there is an extended frame back to the asm code.
-    g_ar_hasExtendedFrame = g_ar.currentThread->m_portData.m_hasExtendedFrame;
+    g_ar_hasExtendedFrame = kernel().currentThread->m_portData.m_hasExtendedFrame;
 #endif // __FPU_USED
 
     return stack;
@@ -443,7 +443,7 @@ uint32_t ar_port_yield_isr(uint32_t topOfStack, uint32_t isExtendedFrame)
 #if DEBUG
 void ar_port_service_call()
 {
-    assert(g_ar.lockCount == 0);
+    assert(kernel().lockCount == 0);
     SCB->ICSR |= SCB_ICSR_PENDSVSET_Msk;
     __DSB();
     __ISB();

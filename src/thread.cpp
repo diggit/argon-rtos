@@ -41,7 +41,6 @@
 #include <cstring>
 #include <cstdio>
 
-
 namespace Ar {
 
 	//------------------------------------------------------------------------------
@@ -50,8 +49,13 @@ namespace Ar {
 
 	// See ar_kernel.h for documentation of this function.
 	Thread::Thread(const char *name, Entry entry, void *param, void *stack, std::size_t stackSize, Priority priority, InitialState initialState) :
-		m_stackBottom(reinterpret_cast<std::uint32_t *>(stack)), m_priority(priority), m_entry(thread_entry), m_threadNode(this), m_blockedNode(this),
-		m_uniqueId(Kernel::getNewThreadId()), m_userEntry(entry) {
+		m_stackBottom(reinterpret_cast<std::uint32_t *>(stack)),
+		m_priority(priority),
+		m_entry(thread_entry),
+		m_threadNode(this),
+		m_blockedNode(this),
+		m_uniqueId(Kernel::getNewThreadId()),
+		m_userEntry(entry) {
 		// Assertions.
 		assert(priority >= minThreadPriority || (entry == Kernel::idle_entry && priority == idleThreadPriority));
 		assert(stackSize >= sizeof(Port::ThreadContext));
@@ -268,7 +272,7 @@ namespace Ar {
 	StatusW Thread::setPriority(Priority priority) {
 		if (Port::get_irq_state()) { return Ar::Status::notFromInterruptError; }
 
-		if (priority == Thread::idleThreadPriority && this != Kernel::idleThread()) { return Status::invalidPriorityError; }
+		if (priority == Thread::idleThreadPriority && this != &Kernel::idleThread()) { return Status::invalidPriorityError; }
 
 		if (priority != m_priority) {
 			KernelLock guard;
@@ -300,7 +304,7 @@ namespace Ar {
 		auto thread = Thread::getCurrent();
 
 		// bail if there is not a running thread to put to sleep
-		if (!duration.has_value() || !duration.value() || !thread) { return; }
+		if ((duration.has_value() && duration.value().isZero()) || !thread) { return; }
 
 		// Sleeping infinitely is equivalent to suspending the thread.
 		if (!duration.has_value()) {
@@ -375,22 +379,6 @@ namespace Ar {
 		for (;;) {}
 	}
 
-	//! @retval true The @a a thread has a higher priority than @a b.
-	//! @retval false The @a a thread has a lower or equal priority than @a b.
-	bool Thread::sort_by_priority(List::Node *a, List::Node *b) {
-		Thread *aThread = a->getObject<Thread>();
-		Thread *bThread = b->getObject<Thread>();
-		return (aThread->m_priority > bThread->m_priority);
-	}
-
-	//! @retval true The @a a thread has an earlier wakeup time than @a b.
-	//! @retval false The @a a thread has a later or equal wakeup time than @a b.
-	bool Thread::sort_by_wakeup(List::Node *a, List::Node *b) {
-		Thread *aThread = a->getObject<Thread>();
-		Thread *bThread = b->getObject<Thread>();
-		return (aThread->m_wakeupTime < bThread->m_wakeupTime);
-	}
-
 	//! The thread is removed from the ready list. It is placed on the blocked list
 	//! referenced by the @a blockedList argument and its state is set to
 	//! #ThreadState::blocked. If the timeout is non-infinite, the thread is also
@@ -404,7 +392,7 @@ namespace Ar {
 	//!     blocked forever. A timeout of 0 is not allowed and should be handled
 	//!     by the caller.
 	void Thread::block(List &blockedList, std::optional<Duration> timeout) {
-		assert(timeout != 0);
+		assert(!timeout.has_value() || !timeout.value().isZero());
 
 		// Remove this thread from the ready list.
 		Kernel::readyList().remove(&m_threadNode);
@@ -467,9 +455,7 @@ namespace Ar {
 	// See ar_kernel.h for documentation of this function.
 	Thread *ar_thread_get_current(void) { return Thread::getCurrent(); }
 
-	std::uint16_t Thread::get_load(Duration measurementTime) {
-		return Kernel::get_thread_load(this);
-	}
+	std::uint16_t Thread::get_load(Duration measurementTime) { return Kernel::get_thread_load(this); }
 
 	// See ar_kernel.h for documentation of this function.
 	std::size_t Thread::getStackUsedNow() {
@@ -505,15 +491,9 @@ namespace Ar {
 	std::size_t Thread::getReport(ThreadStatus *report, std::size_t maxEntries, Duration loadMeasurementTime) {
 		std::size_t threadCount = 0;
 #if AR_GLOBAL_OBJECT_LISTS
-		std::array<List *const, 1> threadLists = {
-			&g_ar_objects.threads
-		};
+		std::array<List *const, 1> threadLists = {&g_ar_objects.threads};
 #else
-		std::array<List *const, 3> threadLists = {
-			&Kernel::readyList(),
-			&Kernel::suspendedList(),
-			&Kernel::sleepingList()
-		};
+		std::array<List *const, 3> threadLists = {&Kernel::readyList(), &Kernel::suspendedList(), &Kernel::sleepingList()};
 #endif // AR_GLOBAL_OBJECT_LISTS
 
 		for (std::uint32_t i = 0; i < std::size(threadLists) && threadCount < maxEntries; ++i) {
@@ -524,7 +504,8 @@ namespace Ar {
 					auto *thread = node->getObject<Thread>();
 
 					if (report) {
-						*report = ThreadStatus(thread, thread->m_name, thread->m_uniqueId, Kernel::get_thread_load(thread), thread->m_state, thread->getStackUsedMax(),
+						*report = ThreadStatus(thread, thread->m_name, thread->m_uniqueId, Kernel::get_thread_load(thread), thread->m_state,
+							thread->getStackUsedMax(),
 							reinterpret_cast<std::size_t>(thread->m_stackTop) - reinterpret_cast<std::size_t>(thread->m_stackBottom));
 						++report;
 					}

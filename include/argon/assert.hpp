@@ -4,9 +4,6 @@
 
 #include <cassert>
 
-#include "argon/config.hpp"
-#include "argon/port.hpp"
-
 // passing through assert, always evaluates expression
 #ifdef NDEBUG /* required by ANSI standard */
 	#define assertWrap(__e) (__e)

@@ -35,6 +35,7 @@
 #include "argon/thread.hpp"
 #include "argon/kernel.hpp"
 #include "argon/assert.hpp"
+#include "argon/units.hpp"
 #include <cstring>
 
 namespace Ar {
@@ -81,7 +82,7 @@ namespace Ar {
 	//! The kernel must be locked prior to entry of this function.
 	Ar::Status Channel::block(List &myDirList, void *value, std::optional<Duration> timeout) {
 		// Nobody waiting, so we must block. Return immediately if the timeout is 0.
-		if (timeout.has_value() && !timeout.value()) { return Status::timeoutError; }
+		if (timeout.has_value() && timeout.value().isZero()) { return Status::timeoutError; }
 
 		// Block this thread on the channel. Save the value pointer into the thread
 		// object so the other side of this channel can access it.
@@ -145,7 +146,7 @@ namespace Ar {
 
 		// Ensure that only 0 timeouts are specified when called from an IRQ handler.
 		if (Port::get_irq_state()) {
-			if (!isSending || (timeout.has_value() && timeout.value())) { return Ar::Status::notFromInterruptError; }
+			if (!isSending || (timeout.has_value() && timeout.value().isZero())) { return Ar::Status::notFromInterruptError; }
 
 			// Handle irq state by deferring the operation.
 			return Kernel::postDeferredAction(Channel::deferred_send, this, value);

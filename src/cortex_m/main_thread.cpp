@@ -34,6 +34,10 @@
 #include <rt_misc.h>
 #endif // defined(__CC_ARM)
 
+#ifndef AR_ENABLE_MAIN_THREAD
+#define AR_ENABLE_MAIN_THREAD 0
+#endif
+
 #if AR_ENABLE_MAIN_THREAD
 
 namespace Ar {

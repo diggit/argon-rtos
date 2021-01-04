@@ -98,7 +98,7 @@ namespace Ar {
 			// Will we block?
 			while (m_ownerLockCount != 0) {
 				// Return immediately if the timeout is 0.
-				if (timeout.has_value() && timeout.value()) { return Status::timeoutError; }
+				if (timeout.has_value() && timeout.value().isZero()) { return Status::timeoutError; }
 
 				// Check if we need to hoist the owning thread's priority to our own.
 				Thread *self = Thread::getCurrent();

@@ -106,7 +106,10 @@ namespace Ar::config {
 	//! Filling the stack with a pattern enables one to determine maximum stack usage of a thread.
 	//! The downside is that it takes longer to initialize a thread. Default is enabled for debug
 	//! builds, disabled for release.
-	static constexpr bool THREAD_STACK_PATTERN_FILL = (DEBUG);
+	static constexpr bool THREAD_STACK_PATTERN_FILL = (DEBUG); //TODO: rather derive from ifndef NDEBUG
+
+	//! @brief Whether to re-fill thread's stack with a pattern when swicthing from thread
+	static constexpr bool REFILL_UNUSED_STACK_ON_SUSPEND = (DEBUG); //TODO: rather derive from ifndef NDEBUG
 
 	//! @name Main thread config
 	//@{
@@ -124,15 +127,12 @@ namespace Ar::config {
 	//!
 	//! This size is subtracted from the C stack size specified by the linker file. The remainder
 	//! is used for the main thread itself.
-	static constexpr std::size_t SCHEDULER_STACK_SIZE = (256);
+	static constexpr std::size_t SCHEDULER_STACK_SIZE = 256;
 
 	//! @brief Priority for the main thread.
-	static constexpr auto MAIN_THREAD_PRIORITY = (128);
+	static constexpr auto MAIN_THREAD_PRIORITY = 128;
 
 	//@}
-
-	//! @brief Set to 1 to enable tickless idle.
-	static constexpr bool ENABLE_TICKLESS_IDLE = true;
 
 	//! @brief Maximum number of actions deferred from IRQ context.
 	static constexpr auto DEFERRED_ACTION_QUEUE_SIZE = 8;
@@ -146,16 +146,13 @@ namespace Ar::config {
 	static constexpr bool ENABLE_LIST_CHECKS = false;
 
 	//! @brief Enable kernel event tracing.
-	static constexpr bool AR_ENABLE_TRACE = (DEBUG);
-
-	//! @brief Configure sleeping time resolution.
-	static constexpr auto timeQuanta = 1_ms;
+	static constexpr bool AR_ENABLE_TRACE = (DEBUG); //TODO: rather derive from ifndef NDEBUG
 
 	//! @brief Configure scheduler period.
-	static constexpr auto schedulerPeriod = 10;
+	static constexpr auto schedulerPeriod = 10_ms;
 
 	//! @brief Enable asserts.
-	static constexpr bool AR_ENABLE_ASSERT = (DEBUG);
+	static constexpr bool AR_ENABLE_ASSERT = (DEBUG); //TODO: rather derive from ifndef NDEBUG
 
 	//! @brief Maximum name length.
 	static constexpr std::size_t MAX_NAME_LENGTH = 8;

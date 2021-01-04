@@ -18,9 +18,9 @@ namespace Ar {
 		 * @brief Linked list node.
 		 */
 		struct Node {
-			Node *m_next {nullptr}; //!< Next node in the list.
-			Node *m_prev {nullptr}; //!< Previous node in the list.
-			void *m_obj {nullptr}; //!< Pointer to the object on the list.
+			Node *m_next {}; //!< Next node in the list.
+			Node *m_prev {}; //!< Previous node in the list.
+			void *m_obj {}; //!< Pointer to the object on the list.
 
 			constexpr Node() = default;
 			constexpr Node(void *node) : m_obj(node) {};
@@ -44,8 +44,8 @@ namespace Ar {
 		// Threads created to start immediately inserts themselves into kernels lists.
 		// So initializing kernel later would clear the head of list making it empty.
 		// We rely on initialization
-		Node *m_head; //!< Pointer to the head of the list. Will be NULL if the list is empty.
-		SortPredicate m_predicate {nullptr}; //!< Sort predicate to use for this list. Items are added to the end if NULL.
+		Node *m_head {}; //!< Pointer to the head of the list. Will be NULL if the list is empty.
+		SortPredicate m_predicate {}; //!< Sort predicate to use for this list. Items are added to the end if NULL.
 
 		constexpr List(SortPredicate predicate = nullptr) : m_predicate(predicate) {}
 

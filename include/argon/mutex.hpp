@@ -27,17 +27,19 @@ namespace Ar {
 	 */
 	class Mutex {
 	  public:
-		Name m_name; //!< Name of the mutex.
-		volatile Thread *m_owner; //!< Current owner thread of the mutex.
-		volatile std::uint32_t m_ownerLockCount; //!< Number of times the owner thread has locked the mutex.
-		std::uint8_t m_originalPriority; //!< Original priority of the owner thread before its priority was raised.
+		Name m_name {}; //!< Name of the mutex.
+		volatile Thread *m_owner {}; //!< Current owner thread of the mutex.
+		volatile std::uint32_t m_ownerLockCount {}; //!< Number of times the owner thread has locked the mutex.
+		std::uint8_t m_originalPriority {}; //!< Original priority of the owner thread before its priority was raised.
 		List m_blockedList {Thread::sort_by_priority}; //!< List of threads blocked on the mutex.
 	#if AR_GLOBAL_OBJECT_LISTS
 		List::Node m_createdNode; //!< Created list node.
 	#endif // AR_GLOBAL_OBJECT_LISTS
 
 		//! @brief Constructor.
-		Mutex(const char *name = nullptr);
+		Mutex(const char *name);
+
+		constexpr Mutex() {};
 
 		//! @brief Cleanup.
 		~Mutex();
